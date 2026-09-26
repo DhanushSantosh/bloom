@@ -79,6 +79,10 @@ export function useSettings() {
 		return raw === "auto-hide" ? "smart" : raw;
 	});
 	const [notchMode, setNotchMode] = useState("fixed");
+	const [notchEdgeDelay, setNotchEdgeDelay] = useState(() => {
+		const val = localStorage.getItem("bloom-notch-edge-delay");
+		return val !== null ? parseInt(val) : 200;
+	});
 	const [lowBatteryThreshold, setLowBatteryThreshold] = useState(20);
 	const [updateStatus, setUpdateStatus] = useState<
 		"idle" | "checking" | "available" | "uptodate" | "error" | "downloading" | "installing"
@@ -161,6 +165,7 @@ export function useSettings() {
 			apply(getVal("bloom-low-battery-threshold"), setLowBatteryThreshold, parseInt);
 
 			apply(getVal("bloom-notch-mode"), setNotchMode, (v) => (v === "auto-hide" ? "smart" : v));
+			apply(getVal("bloom-notch-edge-delay"), setNotchEdgeDelay, parseInt);
 			apply(getVal("bloom-dock-mode"), setDockMode, (v) => (v === "auto-hide" ? "smart" : v));
 
 			const savedCity = getVal("bloom-weather-city");
@@ -205,6 +210,7 @@ export function useSettings() {
 	useSettingsSync({
 		"bloom-dock-mode": setDockMode,
 		"bloom-notch-mode": setNotchMode,
+		"bloom-notch-edge-delay": setNotchEdgeDelay,
 		"bloom-dock-enabled": setDockEnabled,
 		"bloom-dock-icon-only": setDockIconOnly,
 		"bloom-start-icon": setStartIcon,
@@ -507,6 +513,11 @@ export function useSettings() {
 		saveSetting("bloom-notch-mode", newMode);
 	};
 
+	const handleNotchEdgeDelayChange = (val: number) => {
+		setNotchEdgeDelay(val);
+		saveSetting("bloom-notch-edge-delay", val.toString());
+	};
+
 	const handleThresholdChange = (val: number) => {
 		setLowBatteryThreshold(val);
 		saveSetting("bloom-low-battery-threshold", val.toString());
@@ -693,6 +704,8 @@ export function useSettings() {
 		// Notch
 		notchMode,
 		setNotchModeValue,
+		notchEdgeDelay,
+		handleNotchEdgeDelayChange,
 		calendarEnabled,
 		toggleCalendar,
 		timerSoundEnabled,

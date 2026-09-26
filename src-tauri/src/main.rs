@@ -117,6 +117,7 @@ fn main() {
             update_notch_rect,
             set_dock_hovered,
             set_notch_hovered,
+            set_notch_visible,
             get_active_windows,
             get_app_icon,
             get_installed_apps,

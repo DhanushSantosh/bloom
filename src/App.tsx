@@ -632,6 +632,15 @@ function App() {
 		}
 	}, [isNotchHovered, windowLabel]);
 
+	// Tell the backend whether the notch is actually on screen so a hidden
+	// notch (smart/peek mode) stays click-through instead of swallowing clicks
+	// in its footprint.
+	useEffect(() => {
+		if (windowLabel === "main") {
+			invoke("set_notch_visible", { visible: isVisible && !isHidden }).catch(() => {});
+		}
+	}, [isVisible, isHidden, windowLabel]);
+
 	useEffect(() => {
 		const updateRect = () => {
 			if (bloomRef.current && windowLabel === "main") {

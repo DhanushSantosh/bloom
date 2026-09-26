@@ -31,6 +31,11 @@ pub async fn set_notch_hovered(hovered: bool) {
 }
 
 #[tauri::command]
+pub async fn set_notch_visible(visible: bool) {
+    NOTCH_IS_VISIBLE.store(visible, Ordering::Relaxed);
+}
+
+#[tauri::command]
 pub async fn update_dock_rect(rect: IntRect) {
     if let Ok(mut r) = DOCK_RECT.lock() {
         *r = Some(rect);

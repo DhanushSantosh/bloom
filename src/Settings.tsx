@@ -160,6 +160,8 @@ function SettingsApp() {
 						<NotchTab
 							notchMode={settings.notchMode}
 							setNotchModeValue={settings.setNotchModeValue}
+							notchEdgeDelay={settings.notchEdgeDelay}
+							handleNotchEdgeDelayChange={settings.handleNotchEdgeDelayChange}
 							calendarEnabled={settings.calendarEnabled}
 							toggleCalendar={settings.toggleCalendar}
 							timerSoundEnabled={settings.timerSoundEnabled}
