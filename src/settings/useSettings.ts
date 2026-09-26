@@ -620,6 +620,39 @@ export function useSettings() {
 		emit("weather-refresh", true);
 	};
 
+	// ── Reset to defaults ──
+	const resetToDefaults = async () => {
+		try {
+			const { ask } = await import("@tauri-apps/plugin-dialog");
+			const confirmed = await ask(
+				"All settings return to their defaults and Bloom restarts. Pinned apps and custom icons are kept.",
+				{
+					title: "Reset Bloom to Defaults",
+					kind: "warning",
+					okLabel: "Reset and Restart",
+					cancelLabel: "Cancel"
+				}
+			);
+			if (!confirmed) return;
+
+			await invoke("reset_settings");
+
+			// settings.json is cleared, but every window also caches bloom keys
+			// in localStorage; drop them so the restart can't resurrect values.
+			// The first-run/version sentinels are lifecycle markers, not
+			// preferences — keeping them avoids replaying the splash, which
+			// would also re-trigger the first-run autostart enable.
+			const keep = new Set(["bloom-first-run", "bloom-app-version"]);
+			for (const key of Object.keys(localStorage)) {
+				if (key.startsWith("bloom-") && !keep.has(key)) localStorage.removeItem(key);
+			}
+
+			await invoke("restart_bloom").catch(console.error);
+		} catch (e) {
+			console.error("Reset failed:", e);
+		}
+	};
+
 	// ── Export / Import ──
 	const handleExportSettings = async () => {
 		setExportStatus("exporting");
@@ -779,6 +812,7 @@ export function useSettings() {
 
 		// Utilities
 		restartBloom: () => invoke("restart_bloom"),
+		resetToDefaults,
 		quitBloom: () => invoke("quit_bloom")
 	};
 }

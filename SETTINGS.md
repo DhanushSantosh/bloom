@@ -179,4 +179,5 @@ with open(path, 'w') as f: json.dump(settings, f)
 - The `useSettingsSync` hook auto-converts `"true"` / `"false"` strings to booleans.
 - `auto-hide` mode values in `bloom-dock-mode` and `bloom-notch-mode` are legacy aliases for `smart` — they are mapped automatically.
 - Changing `bloom-scale` triggers AppBar re-registration to adjust reserved screen space.
+- Settings → General → Reset to Defaults removes every `bloom-` key from `settings.json` and `localStorage` (except the `bloom-first-run` / `bloom-app-version` lifecycle sentinels), then restarts Bloom. Pinned apps (`pinned_apps.json`) and uploaded icons (`custom_icons/`) are preserved.
 - Theme changes (`bloom-theme-*`) are applied by reading all theme values from `localStorage` and calling `applyTheme()` — the theme system depends on all five theme keys being in sync.

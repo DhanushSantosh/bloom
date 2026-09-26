@@ -135,6 +135,7 @@ function SettingsApp() {
 							lowBatteryThreshold={settings.lowBatteryThreshold}
 							handleThresholdChange={settings.handleThresholdChange}
 							restartBloom={settings.restartBloom}
+							resetToDefaults={settings.resetToDefaults}
 							quitBloom={settings.quitBloom}
 						/>
 					)}

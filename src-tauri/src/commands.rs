@@ -3311,6 +3311,51 @@ pub fn import_settings(app: AppHandle, settings: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+pub fn reset_settings(app: AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("settings.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Keep non-Bloom keys (the file is user-editable) and the first-run/version
+    // sentinels (lifecycle markers, not preferences — keeping them avoids
+    // replaying the splash after a reset). Everything else falls back to
+    // defaults in both the backend and the frontends.
+    let keep = ["bloom-first-run", "bloom-app-version"];
+    let mut settings: HashMap<String, serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default();
+    let removed: Vec<String> = settings
+        .keys()
+        .filter(|key| key.starts_with("bloom-") && !keep.contains(&key.as_str()))
+        .cloned()
+        .collect();
+    for key in &removed {
+        settings.remove(key);
+    }
+
+    let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    crate::utils::replace_settings_cache(settings);
+
+    // Mirror the external-edit watcher so every open window drops the removed
+    // keys from localStorage. The caller restarts Bloom right after, but this
+    // keeps the reset correct even if a window lingers.
+    for key in removed {
+        let _ = app.emit(
+            "settings-external-changed",
+            serde_json::json!({ "key": key, "value": null }),
+        );
+    }
+    Ok(())
+}
+
 pub fn setup_settings_watcher(app: AppHandle) {
     use tauri::Manager;
 
