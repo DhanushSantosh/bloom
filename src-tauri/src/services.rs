@@ -2104,6 +2104,26 @@ fn top_edge_dwell_ms(app_handle: &AppHandle) -> i64 {
         .clamp(0, 2000)
 }
 
+/// True when the cursor sits inside the top-edge hot band on the primary
+/// monitor. Shared by the dwell gate and top-edge hit-testing continuity.
+fn in_top_edge_band(cursor: windows::Win32::Foundation::POINT, scale: f64) -> bool {
+    let (mon_x, mon_y) = MH_CACHED_MON_POS
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or((0, 0));
+    let mon_w = MH_CACHED_MON_SIZE
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|s| s.0 as i32)
+        .unwrap_or(1920);
+
+    cursor.y <= (mon_y + (TOP_EDGE_BAND_PX * scale) as i32)
+        && cursor.x >= mon_x
+        && cursor.x <= (mon_x + mon_w)
+}
+
 /// True once the cursor has stayed inside the top band long enough to count as
 /// a deliberate reveal. Mere contact does not arm: a pass through the top strip
 /// on the way to a maximized window's tab/title-bar controls must not peek the
@@ -2118,23 +2138,7 @@ fn top_edge_armed_for(
     now: i64,
     scale: f64,
 ) -> bool {
-    let (mon_x, mon_y) = MH_CACHED_MON_POS
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .unwrap_or((0, 0));
-    let mon_w = MH_CACHED_MON_SIZE
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .map(|s| s.0 as i32)
-        .unwrap_or(1920);
-
-    let in_band = cursor.y <= (mon_y + (TOP_EDGE_BAND_PX * scale) as i32)
-        && cursor.x >= mon_x
-        && cursor.x <= (mon_x + mon_w);
-
-    if !in_band {
+    if !in_top_edge_band(cursor, scale) {
         MH_TOP_EDGE_ENTER_MS.store(0, Ordering::Relaxed);
         MH_TOP_EDGE_ARMED.store(false, Ordering::Relaxed);
         return false;
@@ -2196,7 +2200,19 @@ fn update_main_interaction(
 
     let in_notch_hover = NOTCH_IS_HOVERED.load(Ordering::Relaxed);
     let scale = main_win.scale_factor().unwrap_or(1.0);
-    let edge_armed = top_edge_armed_for(app_handle, cursor, now, scale);
+    // The top-edge reveal exists only to bring a hidden notch on screen: it is
+    // dwell-gated, and fixed mode (always visible) skips it entirely. This is
+    // about showing the notch — the hit-testing continuity below is separate
+    // and must stay immediate.
+    let edge_armed = if notch_mode_reserves_work_area(
+        get_setting_str(app_handle, "bloom-notch-mode").as_deref(),
+    ) {
+        MH_TOP_EDGE_ENTER_MS.store(0, Ordering::Relaxed);
+        MH_TOP_EDGE_ARMED.store(false, Ordering::Relaxed);
+        false
+    } else {
+        top_edge_armed_for(app_handle, cursor, now, scale)
+    };
 
     let mut is_notch_hovered = false;
     if edge_armed || in_notch_hover {
@@ -2226,30 +2242,27 @@ fn update_main_interaction(
                 let ry_bottom =
                     win_pos.y + (r.height as f64 * scale) as i32 + pad_y_bottom + hyst;
 
-                // A hidden notch must not capture clicks. In smart/peek it is
-                // off screen most of the time; claiming its footprint then
-                // swallows clicks meant for whatever sits behind it (e.g. a
-                // maximized browser's tab strip). Only a visible notch, a live
-                // hover, or the armed top edge may claim the footprint.
+                let in_notch_rect = cursor.x >= rx
+                    && cursor.x <= (rx + rw)
+                    && cursor.y >= ry_top
+                    && cursor.y <= ry_bottom;
+
+                // Approaching along the top edge keeps the window interactive
+                // while near the notch's horizontal span. This must stay
+                // immediate (never dwell-gated): NOTCH_RECT lags the expand/
+                // contract animation, and letting click-through flip mid-hover
+                // makes the notch expand/contract repeatedly. It is gated on
+                // the notch being on screen (or a live hover) so a hidden
+                // notch still can't swallow pass-by clicks.
+                let edge_pad = (60.0 * scale) as i32;
+                let in_top_span = in_top_edge_band(cursor, scale)
+                    && cursor.x >= rx - edge_pad
+                    && cursor.x <= rx + rw + edge_pad;
+
                 let notch_visible = NOTCH_IS_VISIBLE.load(Ordering::Relaxed);
                 let hover_active =
                     is_notch_hovered || now < MH_TOPBAR_EXPIRY_MS.load(Ordering::Relaxed);
-                if (notch_visible || hover_active)
-                    && cursor.x >= rx
-                    && cursor.x <= (rx + rw)
-                    && cursor.y >= ry_top
-                    && cursor.y <= ry_bottom
-                {
-                    is_click_interactive = true;
-                }
-
-                // Approaching along the top edge keeps the window interactive
-                // while near the notch's horizontal span, so peek/hover can't
-                // flicker at the boundary. The screen corners stay
-                // click-through, and only an armed edge counts — a
-                // pass-through must not grab the click.
-                let edge_pad = (60.0 * scale) as i32;
-                if edge_armed && cursor.x >= rx - edge_pad && cursor.x <= rx + rw + edge_pad {
+                if (notch_visible || hover_active) && (in_notch_rect || in_top_span) {
                     is_click_interactive = true;
                 }
             }
