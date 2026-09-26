@@ -543,8 +543,12 @@ function App() {
 		let disposed = false;
 
 		listen<UpdateCheckResult>("update-available", (event) => {
-			if (!event.payload.available) return;
-			setUpdateAvailable(true);
+			setUpdateAvailable(event.payload.available);
+			if (!event.payload.available) {
+				setShowUpdatePulse(false);
+				if (updatePulseTimerRef.current) clearTimeout(updatePulseTimerRef.current);
+				return;
+			}
 			setShowUpdatePulse(true);
 			if (notchMode === "peek") triggerEventPeek(6000);
 			if (updatePulseTimerRef.current) clearTimeout(updatePulseTimerRef.current);
@@ -558,6 +562,8 @@ function App() {
 
 		invoke<UpdateCheckResult>("get_update_state")
 			.then((state) => {
+				// Only restore a badge; clearing is left to check results so a
+				// late mount read cannot race an "update-available" event.
 				if (state.available) setUpdateAvailable(true);
 			})
 			.catch((e) => console.error("Failed to read update state:", e));
