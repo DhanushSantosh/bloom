@@ -75,6 +75,8 @@ export function useSettings() {
 		() => localStorage.getItem("bloom-dock-win-number-enabled") !== "false"
 	);
 	const [dockMode, setDockMode] = useState(() => {
+		// "smart" is the fresh-install default — keep in step with App.tsx,
+		// Dock.tsx, and the backend fallback in commands.rs.
 		const raw = localStorage.getItem("bloom-dock-mode") || "smart";
 		return raw === "auto-hide" ? "smart" : raw;
 	});

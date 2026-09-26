@@ -592,7 +592,7 @@ function App() {
 	const [startupAnimating, setStartupAnimating] = useState(false);
 
 	const [dockMode, setDockMode] = useState(() => {
-		const raw = localStorage.getItem("bloom-dock-mode") || "fixed";
+		const raw = localStorage.getItem("bloom-dock-mode") || "smart";
 		if (raw === "auto-hide") return "smart";
 		return raw;
 	});
@@ -854,7 +854,7 @@ function App() {
 						});
 						localStorage.setItem("bloom-first-run", "done");
 					}
-					const rawDockMode = getVal("bloom-dock-mode", "fixed") as string;
+					const rawDockMode = getVal("bloom-dock-mode", "smart") as string;
 					const dockMode = rawDockMode === "auto-hide" ? "smart" : rawDockMode;
 					const syncWindows = async () => {
 						const dockEnabled = getVal("bloom-dock-enabled", "true") === "true";
@@ -996,7 +996,7 @@ function App() {
 			return;
 		}
 		if (dockEnabled) {
-			invoke("init_dock", { mode: localStorage.getItem("bloom-dock-mode") || "fixed" });
+			invoke("init_dock", { mode: localStorage.getItem("bloom-dock-mode") || "smart" });
 		} else {
 			invoke("toggle_dock", { enable: false });
 		}

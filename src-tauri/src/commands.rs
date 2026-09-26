@@ -182,9 +182,9 @@ pub async fn init_dock(app: AppHandle, mode: String) {
 pub async fn toggle_dock(app: AppHandle, enable: bool) {
     if let Some(dock_win) = app.get_webview_window("dock") {
         if enable {
-            // Load the saved dock mode rather than hardcoding "fixed"
+            // Load the saved dock mode; "smart" is the fresh-install default.
             let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
-                .unwrap_or_else(|| "fixed".to_string());
+                .unwrap_or_else(|| "smart".to_string());
             init_dock(app, saved_mode).await;
         } else {
             let _ = dock_win.hide();
