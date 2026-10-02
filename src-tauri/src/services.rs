@@ -1869,12 +1869,18 @@ pub fn set_native_osd_suppressed(suppress: bool) {
     }
 }
 
-/// Applies the flyout suppression that matches the brightness overlay setting.
+/// The volume and brightness flyouts share one host window, so it is only
+/// suppressed while Bloom replaces both. With either overlay turned off, the
+/// user asked for the native flyout and it must stay visible.
 fn sync_native_osd(app_handle: &AppHandle) {
-    let overlay_enabled = get_setting_str(app_handle, "bloom-brightness-overlay-enabled")
-        .map(|v| v != "false")
-        .unwrap_or(true);
-    set_native_osd_suppressed(overlay_enabled);
+    let enabled = |key: &str| {
+        get_setting_str(app_handle, key)
+            .map(|v| v != "false")
+            .unwrap_or(true)
+    };
+    set_native_osd_suppressed(
+        enabled("bloom-brightness-overlay-enabled") && enabled("bloom-volume-overlay-enabled"),
+    );
 }
 
 pub fn setup_brightness_worker() {
