@@ -1383,6 +1383,9 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
         let my_process_id = std::process::id();
         let mut last_monitor_update = Instant::now() - Duration::from_secs(5);
         let mut cached_scale = 1.0f64;
+        // Re-check the native flyout every ~1.5s: picks up setting changes and
+        // a host window recreated by an Explorer restart.
+        let mut osd_sync_ticks = 0u32;
 
         loop {
             unsafe {
@@ -1663,6 +1666,12 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                     last_visible = true;
                 }
 
+                osd_sync_ticks += 1;
+                if osd_sync_ticks >= 10 {
+                    osd_sync_ticks = 0;
+                    sync_native_osd(&handle_visibility);
+                }
+
                 // Enforce native taskbar hiding (periodic check)
                 if NATIVE_TASKBAR_HIDDEN.load(Ordering::Relaxed) {
                     use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, IsWindowVisible};
@@ -1778,13 +1787,104 @@ fn set_physical_monitors_brightness(brightness: u32) {
     }
 }
 
+/// Explorer-owned windows that host the Windows 11 volume/brightness flyout.
+/// The flyout lives in a small, non-activating `XamlExplorerHostIslandWindow`;
+/// the same class also hosts full-screen surfaces (Alt+Tab, Task View), which
+/// the size check excludes.
+fn native_osd_windows() -> Vec<HWND> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowA, FindWindowExW, GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN,
+        WS_EX_NOACTIVATE,
+    };
+    let mut found = Vec::new();
+    unsafe {
+        let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        let Ok(tray) = FindWindowA(tray_class, windows::core::PCSTR::null()) else {
+            return found;
+        };
+        let mut explorer_pid = 0u32;
+        GetWindowThreadProcessId(tray, Some(&mut explorer_pid));
+        let (screen_w, screen_h) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+
+        let mut after: Option<HWND> = None;
+        while let Ok(hwnd) = FindWindowExW(
+            None,
+            after,
+            windows::core::w!("XamlExplorerHostIslandWindow"),
+            windows::core::PCWSTR::null(),
+        ) {
+            after = Some(hwnd);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let mut rect = RECT::default();
+            let small = GetWindowRect(hwnd, &mut rect).is_ok()
+                && (rect.right - rect.left) < screen_w / 2
+                && (rect.bottom - rect.top) < screen_h / 2;
+            if pid == explorer_pid && (ex_style & WS_EX_NOACTIVATE.0) != 0 && small {
+                found.push(hwnd);
+            }
+        }
+    }
+    found
+}
+
+/// Laptop brightness keys bypass input hooks (the firmware changes brightness
+/// and notifies the display driver directly), so unlike the volume keys they
+/// cannot be swallowed to keep Windows from drawing its own flyout. While
+/// Bloom's overlay replaces it, the flyout host is kept fully transparent and
+/// click-through instead; Explorer may still show it, but nothing is visible.
+pub fn set_native_osd_suppressed(suppress: bool) {
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetLayeredWindowAttributes, SetLayeredWindowAttributes, SetWindowLongW, LWA_ALPHA,
+        WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    };
+    for hwnd in native_osd_windows() {
+        unsafe {
+            let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let mut alpha = 255u8;
+            // Explorer never makes this window layered itself, so a layered
+            // window at alpha 0 is Bloom's doing, including from a crashed run.
+            let suppressed = (ex_style & WS_EX_LAYERED.0) != 0
+                && GetLayeredWindowAttributes(hwnd, None, Some(&mut alpha), None).is_ok()
+                && alpha == 0;
+            if suppress && !suppressed {
+                SetWindowLongW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (ex_style | WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) as i32,
+                );
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
+            } else if !suppress && suppressed {
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+                SetWindowLongW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (ex_style & !(WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0)) as i32,
+                );
+            }
+        }
+    }
+}
+
+/// Applies the flyout suppression that matches the brightness overlay setting.
+fn sync_native_osd(app_handle: &AppHandle) {
+    let overlay_enabled = get_setting_str(app_handle, "bloom-brightness-overlay-enabled")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    set_native_osd_suppressed(overlay_enabled);
+}
+
 pub fn setup_brightness_worker() {
     let (tx, rx) = channel::<u32>();
     let _ = BRIGHTNESS_SENDER.set(tx);
     std::thread::spawn(move || unsafe {
         // Direct WMI COM + DXVA2 implementation (zero child processes spawned).
         use windows::Win32::System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+            CoCreateInstance, CoInitializeEx, CoSetProxyBlanket, CoUninitialize, CLSCTX_ALL,
+            COINIT_MULTITHREADED, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
         };
         use windows::Win32::System::Variant::{VariantClear, VARENUM, VARIANT};
         use windows::Win32::System::Wmi::{
@@ -1818,7 +1918,54 @@ pub fn setup_brightness_worker() {
             }
         };
 
-        while let Ok(brightness) = rx.recv() {
+        // Without impersonation on the proxy, WMI rejects the query with
+        // WBEM_E_ACCESS_DENIED whenever process-wide COM security was not
+        // initialized for it, so every write was silently dropped.
+        // 10 = RPC_C_AUTHN_WINNT, 0 = RPC_C_AUTHZ_NONE (Win32_System_Rpc is not enabled).
+        let _ = CoSetProxyBlanket(
+            &services,
+            10,
+            0,
+            windows::core::PCWSTR::null(),
+            RPC_C_AUTHN_LEVEL_CALL,
+            RPC_C_IMP_LEVEL_IMPERSONATE,
+            None,
+            EOAC_NONE,
+        );
+
+        // GetMethod only works on the class definition; on an instance it
+        // fails with WBEM_E_ILLEGAL_OPERATION. Resolve the input signature once.
+        let set_brightness_params = {
+            let mut class_def: Option<IWbemClassObject> = None;
+            let mut in_cls: Option<IWbemClassObject> = None;
+            if services
+                .GetObject(
+                    &windows::core::BSTR::from("WmiMonitorBrightnessMethods"),
+                    WBEM_GENERIC_FLAG_TYPE(0),
+                    None,
+                    Some(&mut class_def),
+                    None,
+                )
+                .is_ok()
+            {
+                if let Some(ref class_def) = class_def {
+                    let _ = class_def.GetMethod(
+                        windows::core::w!("WmiSetBrightness"),
+                        0i32,
+                        &mut in_cls,
+                        std::ptr::null_mut(),
+                    );
+                }
+            }
+            in_cls
+        };
+
+        while let Ok(mut brightness) = rx.recv() {
+            // A slider drag queues a value per input event, and each write is
+            // slow (WMI plus DDC/CI per monitor). Only the latest value matters.
+            while let Ok(newer) = rx.try_recv() {
+                brightness = newer;
+            }
             let brightness = brightness.min(100);
             // 1. Laptop internal panel via WMI WmiMonitorBrightnessMethods
             let wql = windows::core::BSTR::from("WQL");
@@ -1839,50 +1986,39 @@ pub fn setup_brightness_worker() {
                                 let obj_path = windows::core::BSTR::from(relpath_str.as_str());
                                 let method_name = windows::core::BSTR::from("WmiSetBrightness");
 
-                                let mut in_cls: Option<IWbemClassObject> = None;
-                                if obj
-                                    .GetMethod(
-                                        windows::core::w!("WmiSetBrightness"),
-                                        0i32,
-                                        &mut in_cls,
-                                        std::ptr::null_mut(),
-                                    )
-                                    .is_ok()
-                                {
-                                    if let Some(in_cls) = in_cls {
-                                        if let Ok(in_params) = in_cls.SpawnInstance(0i32) {
-                                            let mut b_var = VARIANT::default();
-                                            let b_anon = &mut b_var.Anonymous.Anonymous;
-                                            b_anon.vt = VARENUM(17); // VT_UI1
-                                            b_anon.Anonymous.bVal = brightness as u8;
-                                            let _ = in_params.Put(
-                                                windows::core::w!("Brightness"),
-                                                0i32,
-                                                &b_var,
-                                                0,
-                                            );
+                                if let Some(ref in_cls) = set_brightness_params {
+                                    if let Ok(in_params) = in_cls.SpawnInstance(0i32) {
+                                        let mut b_var = VARIANT::default();
+                                        let b_anon = &mut b_var.Anonymous.Anonymous;
+                                        b_anon.vt = VARENUM(17); // VT_UI1
+                                        b_anon.Anonymous.bVal = brightness as u8;
+                                        let _ = in_params.Put(
+                                            windows::core::w!("Brightness"),
+                                            0i32,
+                                            &b_var,
+                                            0,
+                                        );
 
-                                            let mut t_var = VARIANT::default();
-                                            let t_anon = &mut t_var.Anonymous.Anonymous;
-                                            t_anon.vt = VARENUM(3); // VT_I4
-                                            t_anon.Anonymous.lVal = 0i32;
-                                            let _ = in_params.Put(
-                                                windows::core::w!("Timeout"),
-                                                0i32,
-                                                &t_var,
-                                                0,
-                                            );
+                                        let mut t_var = VARIANT::default();
+                                        let t_anon = &mut t_var.Anonymous.Anonymous;
+                                        t_anon.vt = VARENUM(3); // VT_I4
+                                        t_anon.Anonymous.lVal = 0i32;
+                                        let _ = in_params.Put(
+                                            windows::core::w!("Timeout"),
+                                            0i32,
+                                            &t_var,
+                                            0,
+                                        );
 
-                                            let _ = services.ExecMethod(
-                                                &obj_path,
-                                                &method_name,
-                                                WBEM_GENERIC_FLAG_TYPE(0),
-                                                None,
-                                                Some(&in_params),
-                                                None,
-                                                None,
-                                            );
-                                        }
+                                        let _ = services.ExecMethod(
+                                            &obj_path,
+                                            &method_name,
+                                            WBEM_GENERIC_FLAG_TYPE(0),
+                                            None,
+                                            Some(&in_params),
+                                            None,
+                                            None,
+                                        );
                                     }
                                 }
                             }
