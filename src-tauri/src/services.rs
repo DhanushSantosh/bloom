@@ -1784,7 +1784,8 @@ pub fn setup_brightness_worker() {
     std::thread::spawn(move || unsafe {
         // Direct WMI COM + DXVA2 implementation (zero child processes spawned).
         use windows::Win32::System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+            CoCreateInstance, CoInitializeEx, CoSetProxyBlanket, CoUninitialize, CLSCTX_ALL,
+            COINIT_MULTITHREADED, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
         };
         use windows::Win32::System::Variant::{VariantClear, VARENUM, VARIANT};
         use windows::Win32::System::Wmi::{
@@ -1818,7 +1819,54 @@ pub fn setup_brightness_worker() {
             }
         };
 
-        while let Ok(brightness) = rx.recv() {
+        // Without impersonation on the proxy, WMI rejects the query with
+        // WBEM_E_ACCESS_DENIED whenever process-wide COM security was not
+        // initialized for it, so every write was silently dropped.
+        // 10 = RPC_C_AUTHN_WINNT, 0 = RPC_C_AUTHZ_NONE (Win32_System_Rpc is not enabled).
+        let _ = CoSetProxyBlanket(
+            &services,
+            10,
+            0,
+            windows::core::PCWSTR::null(),
+            RPC_C_AUTHN_LEVEL_CALL,
+            RPC_C_IMP_LEVEL_IMPERSONATE,
+            None,
+            EOAC_NONE,
+        );
+
+        // GetMethod only works on the class definition; on an instance it
+        // fails with WBEM_E_ILLEGAL_OPERATION. Resolve the input signature once.
+        let set_brightness_params = {
+            let mut class_def: Option<IWbemClassObject> = None;
+            let mut in_cls: Option<IWbemClassObject> = None;
+            if services
+                .GetObject(
+                    &windows::core::BSTR::from("WmiMonitorBrightnessMethods"),
+                    WBEM_GENERIC_FLAG_TYPE(0),
+                    None,
+                    Some(&mut class_def),
+                    None,
+                )
+                .is_ok()
+            {
+                if let Some(ref class_def) = class_def {
+                    let _ = class_def.GetMethod(
+                        windows::core::w!("WmiSetBrightness"),
+                        0i32,
+                        &mut in_cls,
+                        std::ptr::null_mut(),
+                    );
+                }
+            }
+            in_cls
+        };
+
+        while let Ok(mut brightness) = rx.recv() {
+            // A slider drag queues a value per input event, and each write is
+            // slow (WMI plus DDC/CI per monitor). Only the latest value matters.
+            while let Ok(newer) = rx.try_recv() {
+                brightness = newer;
+            }
             let brightness = brightness.min(100);
             // 1. Laptop internal panel via WMI WmiMonitorBrightnessMethods
             let wql = windows::core::BSTR::from("WQL");
@@ -1839,50 +1887,39 @@ pub fn setup_brightness_worker() {
                                 let obj_path = windows::core::BSTR::from(relpath_str.as_str());
                                 let method_name = windows::core::BSTR::from("WmiSetBrightness");
 
-                                let mut in_cls: Option<IWbemClassObject> = None;
-                                if obj
-                                    .GetMethod(
-                                        windows::core::w!("WmiSetBrightness"),
-                                        0i32,
-                                        &mut in_cls,
-                                        std::ptr::null_mut(),
-                                    )
-                                    .is_ok()
-                                {
-                                    if let Some(in_cls) = in_cls {
-                                        if let Ok(in_params) = in_cls.SpawnInstance(0i32) {
-                                            let mut b_var = VARIANT::default();
-                                            let b_anon = &mut b_var.Anonymous.Anonymous;
-                                            b_anon.vt = VARENUM(17); // VT_UI1
-                                            b_anon.Anonymous.bVal = brightness as u8;
-                                            let _ = in_params.Put(
-                                                windows::core::w!("Brightness"),
-                                                0i32,
-                                                &b_var,
-                                                0,
-                                            );
+                                if let Some(ref in_cls) = set_brightness_params {
+                                    if let Ok(in_params) = in_cls.SpawnInstance(0i32) {
+                                        let mut b_var = VARIANT::default();
+                                        let b_anon = &mut b_var.Anonymous.Anonymous;
+                                        b_anon.vt = VARENUM(17); // VT_UI1
+                                        b_anon.Anonymous.bVal = brightness as u8;
+                                        let _ = in_params.Put(
+                                            windows::core::w!("Brightness"),
+                                            0i32,
+                                            &b_var,
+                                            0,
+                                        );
 
-                                            let mut t_var = VARIANT::default();
-                                            let t_anon = &mut t_var.Anonymous.Anonymous;
-                                            t_anon.vt = VARENUM(3); // VT_I4
-                                            t_anon.Anonymous.lVal = 0i32;
-                                            let _ = in_params.Put(
-                                                windows::core::w!("Timeout"),
-                                                0i32,
-                                                &t_var,
-                                                0,
-                                            );
+                                        let mut t_var = VARIANT::default();
+                                        let t_anon = &mut t_var.Anonymous.Anonymous;
+                                        t_anon.vt = VARENUM(3); // VT_I4
+                                        t_anon.Anonymous.lVal = 0i32;
+                                        let _ = in_params.Put(
+                                            windows::core::w!("Timeout"),
+                                            0i32,
+                                            &t_var,
+                                            0,
+                                        );
 
-                                            let _ = services.ExecMethod(
-                                                &obj_path,
-                                                &method_name,
-                                                WBEM_GENERIC_FLAG_TYPE(0),
-                                                None,
-                                                Some(&in_params),
-                                                None,
-                                                None,
-                                            );
-                                        }
+                                        let _ = services.ExecMethod(
+                                            &obj_path,
+                                            &method_name,
+                                            WBEM_GENERIC_FLAG_TYPE(0),
+                                            None,
+                                            Some(&in_params),
+                                            None,
+                                            None,
+                                        );
                                     }
                                 }
                             }
