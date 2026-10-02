@@ -1033,119 +1033,125 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                         .ok();
                 }
                 while let Ok(cmd) = rx.try_recv() {
-                    if let Some(ref aev) = audio_endpoint_volume {
-                        match cmd {
-                            SystemCommand::VolumeMute => {
-                                if let Ok(muted) = aev.GetMute() {
-                                    let _ = aev.SetMute(!muted.as_bool(), std::ptr::null());
-                                    hide_osd("bloom-volume-overlay-enabled");
-                                }
+                    // Only the volume commands need the audio endpoint. Media, brightness and
+                    // visibility commands must keep working when there is no output device.
+                    match (cmd, audio_endpoint_volume.as_ref()) {
+                        (SystemCommand::VolumeMute, Some(aev)) => {
+                            if let Ok(muted) = aev.GetMute() {
+                                let _ = aev.SetMute(!muted.as_bool(), std::ptr::null());
+                                hide_osd("bloom-volume-overlay-enabled");
                             }
-                            SystemCommand::VolumeUp => {
-                                if let (Ok(vol), Ok(muted)) =
-                                    (aev.GetMasterVolumeLevelScalar(), aev.GetMute())
-                                {
-                                    let _ = aev.SetMasterVolumeLevelScalar(
-                                        (vol + 0.05).min(1.0),
-                                        std::ptr::null(),
-                                    );
-                                    if muted.as_bool() {
-                                        let _ = aev.SetMute(false, std::ptr::null());
-                                    }
-                                    hide_osd("bloom-volume-overlay-enabled");
-                                }
-                            }
-                            SystemCommand::VolumeDown => {
-                                if let Ok(vol) = aev.GetMasterVolumeLevelScalar() {
-                                    let _ = aev.SetMasterVolumeLevelScalar(
-                                        (vol - 0.05).max(0.0),
-                                        std::ptr::null(),
-                                    );
-                                    hide_osd("bloom-volume-overlay-enabled");
-                                }
-                            }
-                            SystemCommand::SetVolume(volume) => {
+                        }
+                        (SystemCommand::VolumeUp, Some(aev)) => {
+                            if let (Ok(vol), Ok(muted)) =
+                                (aev.GetMasterVolumeLevelScalar(), aev.GetMute())
+                            {
                                 let _ = aev.SetMasterVolumeLevelScalar(
-                                    volume.clamp(0.0, 1.0),
+                                    (vol + 0.05).min(1.0),
                                     std::ptr::null(),
                                 );
-                                if volume > 0.0 {
+                                if muted.as_bool() {
                                     let _ = aev.SetMute(false, std::ptr::null());
                                 }
                                 hide_osd("bloom-volume-overlay-enabled");
                             }
-                            SystemCommand::MediaPlayPause => {
-                                if let Some(ref mgr) = manager {
-                                    if let Ok(session) = mgr.GetCurrentSession() {
-                                        let _ = session.TryTogglePlayPauseAsync();
-                                    }
-                                }
-                            }
-                            SystemCommand::MediaNext => {
-                                if let Some(ref mgr) = manager {
-                                    if let Ok(session) = mgr.GetCurrentSession() {
-                                        let _ = session.TrySkipNextAsync();
-                                    }
-                                }
-                            }
-                            SystemCommand::MediaPrevious => {
-                                if let Some(ref mgr) = manager {
-                                    if let Ok(session) = mgr.GetCurrentSession() {
-                                        let _ = session.TrySkipPreviousAsync();
-                                    }
-                                }
-                            }
-                            SystemCommand::MediaSeek(position_ms) => {
-                                if let Some(ref mgr) = manager {
-                                    if let Ok(session) = mgr.GetCurrentSession() {
-                                        let ticks = position_ms * 10_000;
-                                        let _ = session.TryChangePlaybackPositionAsync(ticks);
-                                    }
-                                }
-                            }
-                            SystemCommand::ToggleVisibility(visible) => {
-                                let _ = handle_system.emit("visibility-change", visible);
-                                if let Some(w) = handle_system.get_webview_window("bottom-corners")
-                                {
-                                    if visible {
-                                        let _ = w.show();
-                                    } else {
-                                        let _ = w.hide();
-                                    }
-                                }
-                            }
-                            SystemCommand::BrightnessUp => {
-                                let new_val =
-                                    (CURRENT_BRIGHTNESS.load(Ordering::Relaxed) + 10).min(100);
-                                CURRENT_BRIGHTNESS.store(new_val, Ordering::Relaxed);
-                                LAST_BRIGHTNESS_CHANGE.store(get_now_ms(), Ordering::Relaxed);
-                                let _ = handle_system.emit(
-                                    "brightness-change",
-                                    BrightnessChangeEvent {
-                                        brightness: new_val,
-                                    },
+                        }
+                        (SystemCommand::VolumeDown, Some(aev)) => {
+                            if let Ok(vol) = aev.GetMasterVolumeLevelScalar() {
+                                let _ = aev.SetMasterVolumeLevelScalar(
+                                    (vol - 0.05).max(0.0),
+                                    std::ptr::null(),
                                 );
-                                if let Some(tx) = BRIGHTNESS_SENDER.get() {
-                                    let _ = tx.send(new_val);
-                                }
-                                hide_osd("bloom-brightness-overlay-enabled");
+                                hide_osd("bloom-volume-overlay-enabled");
                             }
-                            SystemCommand::BrightnessDown => {
-                                let current = CURRENT_BRIGHTNESS.load(Ordering::Relaxed);
-                                let new_val = current.saturating_sub(10);
-                                CURRENT_BRIGHTNESS.store(new_val, Ordering::Relaxed);
-                                LAST_BRIGHTNESS_CHANGE.store(get_now_ms(), Ordering::Relaxed);
-                                let _ = handle_system.emit(
-                                    "brightness-change",
-                                    BrightnessChangeEvent {
-                                        brightness: new_val,
-                                    },
-                                );
-                                if let Some(tx) = BRIGHTNESS_SENDER.get() {
-                                    let _ = tx.send(new_val);
-                                }
-                                hide_osd("bloom-brightness-overlay-enabled");
+                        }
+                        (SystemCommand::SetVolume(volume), Some(aev)) => {
+                            let _ = aev.SetMasterVolumeLevelScalar(
+                                volume.clamp(0.0, 1.0),
+                                std::ptr::null(),
+                            );
+                            if volume > 0.0 {
+                                let _ = aev.SetMute(false, std::ptr::null());
                             }
+                            hide_osd("bloom-volume-overlay-enabled");
+                        }
+                        (
+                            SystemCommand::VolumeMute
+                            | SystemCommand::VolumeUp
+                            | SystemCommand::VolumeDown
+                            | SystemCommand::SetVolume(_),
+                            None,
+                        ) => {}
+                        (SystemCommand::MediaPlayPause, _) => {
+                            if let Some(ref mgr) = manager {
+                                if let Ok(session) = mgr.GetCurrentSession() {
+                                    let _ = session.TryTogglePlayPauseAsync();
+                                }
+                            }
+                        }
+                        (SystemCommand::MediaNext, _) => {
+                            if let Some(ref mgr) = manager {
+                                if let Ok(session) = mgr.GetCurrentSession() {
+                                    let _ = session.TrySkipNextAsync();
+                                }
+                            }
+                        }
+                        (SystemCommand::MediaPrevious, _) => {
+                            if let Some(ref mgr) = manager {
+                                if let Ok(session) = mgr.GetCurrentSession() {
+                                    let _ = session.TrySkipPreviousAsync();
+                                }
+                            }
+                        }
+                        (SystemCommand::MediaSeek(position_ms), _) => {
+                            if let Some(ref mgr) = manager {
+                                if let Ok(session) = mgr.GetCurrentSession() {
+                                    let ticks = position_ms * 10_000;
+                                    let _ = session.TryChangePlaybackPositionAsync(ticks);
+                                }
+                            }
+                        }
+                        (SystemCommand::ToggleVisibility(visible), _) => {
+                            let _ = handle_system.emit("visibility-change", visible);
+                            if let Some(w) = handle_system.get_webview_window("bottom-corners") {
+                                if visible {
+                                    let _ = w.show();
+                                } else {
+                                    let _ = w.hide();
+                                }
+                            }
+                        }
+                        (SystemCommand::BrightnessUp, _) => {
+                            let new_val =
+                                (CURRENT_BRIGHTNESS.load(Ordering::Relaxed) + 10).min(100);
+                            CURRENT_BRIGHTNESS.store(new_val, Ordering::Relaxed);
+                            LAST_BRIGHTNESS_CHANGE.store(get_now_ms(), Ordering::Relaxed);
+                            let _ = handle_system.emit(
+                                "brightness-change",
+                                BrightnessChangeEvent {
+                                    brightness: new_val,
+                                },
+                            );
+                            if let Some(tx) = BRIGHTNESS_SENDER.get() {
+                                let _ = tx.send(new_val);
+                            }
+                            hide_osd("bloom-brightness-overlay-enabled");
+                        }
+                        (SystemCommand::BrightnessDown, _) => {
+                            let current = CURRENT_BRIGHTNESS.load(Ordering::Relaxed);
+                            let new_val = current.saturating_sub(10);
+                            CURRENT_BRIGHTNESS.store(new_val, Ordering::Relaxed);
+                            LAST_BRIGHTNESS_CHANGE.store(get_now_ms(), Ordering::Relaxed);
+                            let _ = handle_system.emit(
+                                "brightness-change",
+                                BrightnessChangeEvent {
+                                    brightness: new_val,
+                                },
+                            );
+                            if let Some(tx) = BRIGHTNESS_SENDER.get() {
+                                let _ = tx.send(new_val);
+                            }
+                            hide_osd("bloom-brightness-overlay-enabled");
                         }
                     }
                 }
