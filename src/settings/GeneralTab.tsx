@@ -8,6 +8,7 @@ interface GeneralTabProps {
 	toggleTimeFormat24h: () => void;
 	showUpdateIndicator: boolean;
 	toggleUpdateIndicator: () => void;
+	updatesEnabled: boolean;
 	lowBatteryThreshold: number;
 	handleThresholdChange: (val: number) => void;
 	restartBloom: () => void;
@@ -22,6 +23,7 @@ export function GeneralTab({
 	toggleTimeFormat24h,
 	showUpdateIndicator,
 	toggleUpdateIndicator,
+	updatesEnabled,
 	lowBatteryThreshold,
 	handleThresholdChange,
 	restartBloom,
@@ -39,16 +41,22 @@ export function GeneralTab({
 					</label>
 				</SettingRow>
 
-				<SettingRow
-					icon={Download}
-					label="Update Indicator"
-					desc="Show green dot when update available"
-				>
-					<label className="toggle-switch">
-						<input type="checkbox" checked={showUpdateIndicator} onChange={toggleUpdateIndicator} />
-						<span className="slider"></span>
-					</label>
-				</SettingRow>
+				{updatesEnabled && (
+					<SettingRow
+						icon={Download}
+						label="Update Indicator"
+						desc="Show green dot when update available"
+					>
+						<label className="toggle-switch">
+							<input
+								type="checkbox"
+								checked={showUpdateIndicator}
+								onChange={toggleUpdateIndicator}
+							/>
+							<span className="slider"></span>
+						</label>
+					</SettingRow>
+				)}
 
 				<SettingRow icon={Clock} label="24-Hour Time" desc="Use 24-hour clock format">
 					<label className="toggle-switch">

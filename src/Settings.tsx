@@ -115,11 +115,7 @@ function SettingsApp() {
 									Learn more
 								</button>
 							)}
-							<button
-								className="announcement-banner-close"
-								onClick={dismiss}
-								title="Dismiss"
-							>
+							<button className="announcement-banner-close" onClick={dismiss} title="Dismiss">
 								<X size={12} strokeWidth={2.2} />
 							</button>
 						</div>
@@ -132,6 +128,7 @@ function SettingsApp() {
 							toggleTimeFormat24h={settings.toggleTimeFormat24h}
 							showUpdateIndicator={settings.showUpdateIndicator}
 							toggleUpdateIndicator={settings.toggleUpdateIndicator}
+							updatesEnabled={settings.updatesEnabled}
 							lowBatteryThreshold={settings.lowBatteryThreshold}
 							handleThresholdChange={settings.handleThresholdChange}
 							restartBloom={settings.restartBloom}
@@ -225,6 +222,7 @@ function SettingsApp() {
 					{activeTab === "about" && (
 						<AboutTab
 							appVersion={settings.appVersion}
+							updatesEnabled={settings.updatesEnabled}
 							autoUpdate={settings.autoUpdate}
 							toggleAutoUpdate={settings.toggleAutoUpdate}
 							updateStatus={settings.updateStatus}

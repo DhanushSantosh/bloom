@@ -91,6 +91,7 @@ export function useSettings() {
 	>("idle");
 	const [updateVersion, setUpdateVersion] = useState("");
 	const [appVersion, setAppVersion] = useState("");
+	const [updatesEnabled, setUpdatesEnabled] = useState(false);
 	const [autoUpdate, setAutoUpdate] = useState(
 		() => localStorage.getItem("bloom-auto-update") === "true"
 	);
@@ -205,7 +206,12 @@ export function useSettings() {
 			.then((ver) => setAppVersion(ver || "3.1.2"))
 			.catch(() => setAppVersion("3.1.2"));
 
-		checkForUpdates(false);
+		invoke<boolean>("updates_enabled")
+			.then((enabled) => {
+				setUpdatesEnabled(enabled);
+				if (enabled) checkForUpdates(false);
+			})
+			.catch(() => {});
 	}, []);
 
 	// ── Sync settings from other windows ──
@@ -719,6 +725,7 @@ export function useSettings() {
 		toggleTimeFormat24h,
 		showUpdateIndicator,
 		toggleUpdateIndicator,
+		updatesEnabled,
 		scale,
 		handleScaleChange,
 		cornersEnabled,

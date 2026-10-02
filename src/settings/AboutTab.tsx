@@ -5,6 +5,7 @@ import { SettingRow } from "./SettingRow";
 
 interface AboutTabProps {
 	appVersion: string;
+	updatesEnabled: boolean;
 	autoUpdate: boolean;
 	toggleAutoUpdate: () => void;
 	updateStatus: string;
@@ -19,6 +20,7 @@ interface AboutTabProps {
 
 export function AboutTab({
 	appVersion,
+	updatesEnabled,
 	autoUpdate,
 	toggleAutoUpdate,
 	updateStatus,
@@ -85,26 +87,32 @@ export function AboutTab({
 				</p>
 			</div>
 
-			<div className="setting-group-label">Software Updates</div>
-			<div className="setting-group">
-				<SettingRow icon={Download} label="Auto Update" desc="Update automatically on startup">
-					<label className="toggle-switch">
-						<input type="checkbox" checked={autoUpdate} onChange={toggleAutoUpdate} />
-						<span className="slider"></span>
-					</label>
-				</SettingRow>
+			{updatesEnabled && (
+				<>
+					<div className="setting-group-label">Software Updates</div>
+					<div className="setting-group">
+						<SettingRow icon={Download} label="Auto Update" desc="Update automatically on startup">
+							<label className="toggle-switch">
+								<input type="checkbox" checked={autoUpdate} onChange={toggleAutoUpdate} />
+								<span className="slider"></span>
+							</label>
+						</SettingRow>
 
-				<SettingRow
-					icon={RefreshCw}
-					label={getUpdateLabel()}
-					desc={getUpdateDesc()}
-					action
-					divider={false}
-					onClick={() => (updateStatus === "available" ? installUpdate() : checkForUpdates())}
-				/>
+						<SettingRow
+							icon={RefreshCw}
+							label={getUpdateLabel()}
+							desc={getUpdateDesc()}
+							action
+							divider={false}
+							onClick={() => (updateStatus === "available" ? installUpdate() : checkForUpdates())}
+						/>
+					</div>
+				</>
+			)}
+
+			<div className={`setting-group-label${updatesEnabled ? " setting-group-label--spaced" : ""}`}>
+				Data
 			</div>
-
-			<div className="setting-group-label setting-group-label--spaced">Data</div>
 			<div className="setting-group">
 				<SettingRow
 					icon={FileDown}
@@ -122,7 +130,6 @@ export function AboutTab({
 					onClick={handleImportSettings}
 				/>
 			</div>
-
 		</div>
 	);
 }

@@ -165,7 +165,8 @@ fn main() {
             write_settings_to_path,
             updater::check_for_updates,
             updater::install_update,
-            updater::get_update_state
+            updater::get_update_state,
+            updater::updates_enabled
         ])
         .setup(|app| {
             init_taskbar_marker(app.handle());
