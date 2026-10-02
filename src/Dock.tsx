@@ -462,6 +462,9 @@ const Dock = memo(function Dock() {
 		try {
 			if (app.path === "start") {
 				await invoke("open_app", { appName: "start" });
+			} else if (app.all_hwnds && app.all_hwnds.length > 1) {
+				// Several windows: bring the most recent forward, then cycle.
+				await invoke("focus_app_windows", { hwnds: app.all_hwnds.map(([hwnd]) => hwnd) });
 			} else if (app.hwnd) {
 				await invoke("focus_window", { hwnd: app.hwnd });
 			} else {

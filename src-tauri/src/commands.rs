@@ -836,6 +836,42 @@ pub async fn focus_window(hwnd: isize) {
     .unwrap_or_default();
 }
 
+/// Brings one window of a multi-window dock item forward, like the taskbar's
+/// Win+number / Ctrl+click. `hwnds` comes most-recently-focused first: with
+/// none of them in front, that one is activated; with one in front, the next
+/// window in a stable order is, so repeated clicks visit every window instead
+/// of flipping between the two most recent.
+#[tauri::command]
+pub async fn focus_app_windows(hwnds: Vec<isize>) {
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow,
+            SW_RESTORE, SW_SHOW,
+        };
+        let Some(&most_recent) = hwnds.first() else {
+            return;
+        };
+        let foreground = GetForegroundWindow().0 as isize;
+        let mut ring = hwnds.clone();
+        ring.sort_unstable();
+        let target = match ring.iter().position(|&h| h == foreground) {
+            Some(i) => ring[(i + 1) % ring.len()],
+            None => most_recent,
+        };
+
+        let hwnd = HWND(target as *mut _);
+        if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(hwnd);
+    })
+    .await
+    .unwrap_or_default();
+}
+
 fn get_cache_key(path: &str, name: Option<&str>) -> String {
     let path_lc = path.to_lowercase();
     let name_lc = name.map(|n| n.to_lowercase()).unwrap_or_default();
