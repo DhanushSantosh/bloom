@@ -63,6 +63,21 @@ fn dock_win_number_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Whether one of Bloom's HUD overlays is enabled (`bloom-volume-overlay-enabled`,
+/// `bloom-brightness-overlay-enabled`). With an overlay off, the matching keys
+/// and the native flyout are left to Windows instead of being taken over.
+fn overlay_enabled(app: &AppHandle, key: &str) -> bool {
+    crate::utils::get_setting_str(app, key)
+        .map(|v| v != "false")
+        .unwrap_or(true)
+}
+
+fn hook_overlay_enabled(key: &str) -> bool {
+    KEYBOARD_HOOK_APP_HANDLE
+        .get()
+        .is_none_or(|app| overlay_enabled(app, key))
+}
+
 /// Physical Win state straight from the OS. The tracked flag can go stale when
 /// a keyup is never delivered (secure desktop, keyboard unplugged, hook
 /// timeout); without this check a stale flag would swallow digits forever.
@@ -184,13 +199,17 @@ unsafe extern "system" fn keyboard_hook_proc(
             }
         }
 
-        if vk_code == VK_VOLUME_MUTE || vk_code == VK_VOLUME_UP || vk_code == VK_VOLUME_DOWN {
+        if (vk_code == VK_VOLUME_MUTE || vk_code == VK_VOLUME_UP || vk_code == VK_VOLUME_DOWN)
+            && hook_overlay_enabled("bloom-volume-overlay-enabled")
+        {
             if is_down {
                 handle_volume_key_event(vk_code);
             }
             return windows::Win32::Foundation::LRESULT(1);
         }
-        if vk_code.0 == 0x216 || vk_code.0 == 0x217 {
+        if (vk_code.0 == 0x216 || vk_code.0 == 0x217)
+            && hook_overlay_enabled("bloom-brightness-overlay-enabled")
+        {
             if is_down {
                 handle_brightness_key_event(vk_code);
             }
@@ -970,7 +989,11 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
             let mut last_volume: f32 = -1.0;
             let mut last_muted: bool = false;
 
-            let hide_osd = || {
+            // Only hide the native flyout when Bloom's matching overlay replaces it.
+            let hide_osd = |overlay_key: &str| {
+                if !overlay_enabled(&handle_system, overlay_key) {
+                    return;
+                }
                 use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, ShowWindow, SW_HIDE};
                 let class1 = windows::core::PCSTR(c"NativeHWNDHost".as_ptr() as *const u8);
                 if let Ok(hwnd1) = FindWindowA(class1, windows::core::PCSTR::null()) {
@@ -1015,7 +1038,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                             SystemCommand::VolumeMute => {
                                 if let Ok(muted) = aev.GetMute() {
                                     let _ = aev.SetMute(!muted.as_bool(), std::ptr::null());
-                                    hide_osd();
+                                    hide_osd("bloom-volume-overlay-enabled");
                                 }
                             }
                             SystemCommand::VolumeUp => {
@@ -1029,7 +1052,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                     if muted.as_bool() {
                                         let _ = aev.SetMute(false, std::ptr::null());
                                     }
-                                    hide_osd();
+                                    hide_osd("bloom-volume-overlay-enabled");
                                 }
                             }
                             SystemCommand::VolumeDown => {
@@ -1038,7 +1061,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                         (vol - 0.05).max(0.0),
                                         std::ptr::null(),
                                     );
-                                    hide_osd();
+                                    hide_osd("bloom-volume-overlay-enabled");
                                 }
                             }
                             SystemCommand::SetVolume(volume) => {
@@ -1049,7 +1072,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                 if volume > 0.0 {
                                     let _ = aev.SetMute(false, std::ptr::null());
                                 }
-                                hide_osd();
+                                hide_osd("bloom-volume-overlay-enabled");
                             }
                             SystemCommand::MediaPlayPause => {
                                 if let Some(ref mgr) = manager {
@@ -1105,7 +1128,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                 if let Some(tx) = BRIGHTNESS_SENDER.get() {
                                     let _ = tx.send(new_val);
                                 }
-                                hide_osd();
+                                hide_osd("bloom-brightness-overlay-enabled");
                             }
                             SystemCommand::BrightnessDown => {
                                 let current = CURRENT_BRIGHTNESS.load(Ordering::Relaxed);
@@ -1121,7 +1144,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                 if let Some(tx) = BRIGHTNESS_SENDER.get() {
                                     let _ = tx.send(new_val);
                                 }
-                                hide_osd();
+                                hide_osd("bloom-brightness-overlay-enabled");
                             }
                         }
                     }
@@ -1142,7 +1165,7 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
                                     is_muted,
                                 },
                             );
-                            hide_osd();
+                            hide_osd("bloom-volume-overlay-enabled");
                         }
                     }
                 }
