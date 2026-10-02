@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, memo } from "react";
 import { motion, AnimatePresence, Reorder } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -513,6 +513,23 @@ const Dock = memo(function Dock() {
 		setContextMenu({ x: e.clientX, y: e.clientY, app });
 	};
 
+	// Measured before paint: the menu's height depends on which items it shows,
+	// so it opens just above the cursor and stays inside the dock window.
+	// Positions are in visual pixels; the menu's CSS zoom scales left/top.
+	const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+	useLayoutEffect(() => {
+		if (!contextMenu || !menuRef.current) {
+			setMenuPos(null);
+			return;
+		}
+		const margin = 8;
+		const r = menuRef.current.getBoundingClientRect();
+		setMenuPos({
+			left: Math.max(margin, Math.min(contextMenu.x, window.innerWidth - r.width - margin)),
+			top: Math.max(margin, contextMenu.y - r.height - margin)
+		});
+	}, [contextMenu, scale]);
+
 	const closeMenu = () => {
 		setContextMenu(null);
 		setActiveSubmenu(null);
@@ -549,7 +566,7 @@ const Dock = memo(function Dock() {
 		}
 
 		invoke("set_menu_open", { open, rect }).catch(() => {});
-	}, [contextMenu, showAddPopup, pinnedApps, activeApps, activeSubmenu, scale]);
+	}, [contextMenu, menuPos, showAddPopup, pinnedApps, activeApps, activeSubmenu, scale]);
 
 	const dockItems = useMemo(() => {
 		const runningMap = new Map();
@@ -1200,8 +1217,9 @@ const Dock = memo(function Dock() {
 					ref={menuRef}
 					className="context-menu"
 					style={{
-						left: contextMenu.x,
-						top: contextMenu.y - (contextMenu.app ? 200 : 100) * scale,
+						left: (menuPos?.left ?? contextMenu.x) / scale,
+						top: (menuPos?.top ?? contextMenu.y) / scale,
+						visibility: menuPos ? "visible" : "hidden",
 						zoom: scale
 					}}
 					onClick={(e) => e.stopPropagation()}
@@ -1314,10 +1332,13 @@ const Dock = memo(function Dock() {
 									<div
 										className="menu-item quit"
 										onClick={async () => {
-											if (contextMenu.app?.hwnd) {
-												await invoke("close_window", { hwnd: contextMenu.app.hwnd });
-												closeMenu();
-											}
+											// Close every window of the item, like the taskbar's
+											// "Close all windows", not just the first one.
+											const app = contextMenu.app;
+											const hwnds =
+												app?.all_hwnds?.map(([hwnd]) => hwnd) ?? (app?.hwnd ? [app.hwnd] : []);
+											await Promise.all(hwnds.map((hwnd) => invoke("close_window", { hwnd })));
+											closeMenu();
 										}}
 									>
 										Quit {contextMenu.app.name}
