@@ -66,6 +66,17 @@ const ITEM_INITIAL = { opacity: 0, scale: 0 };
 const ITEM_ANIMATE = { opacity: 1, scale: 1 };
 const ITEM_EXIT = { opacity: 0, scale: 0 };
 
+// One dot per open window, capped at three.
+function WindowDots({ count }: { count: number }) {
+	return (
+		<div className="window-dots">
+			{Array.from({ length: Math.min(Math.max(count, 1), 3) }, (_, i) => (
+				<div key={i} className="active-indicator" />
+			))}
+		</div>
+	);
+}
+
 const Dock = memo(function Dock() {
 	useEffect(() => {
 		return initTheme();
@@ -1045,7 +1056,7 @@ const Dock = memo(function Dock() {
 														);
 													})()}
 												</motion.div>
-												{app.is_running && <div className="active-indicator" />}
+												{app.is_running && <WindowDots count={app.all_hwnds?.length ?? 1} />}
 											</motion.div>
 										</Reorder.Item>
 									))}
@@ -1187,7 +1198,7 @@ const Dock = memo(function Dock() {
 												);
 											})()}
 										</motion.div>
-										{app.is_running && <div className="active-indicator" />}
+										{app.is_running && <WindowDots count={app.all_hwnds?.length ?? 1} />}
 									</motion.div>
 								))}
 							</motion.div>
