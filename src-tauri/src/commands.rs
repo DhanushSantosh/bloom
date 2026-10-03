@@ -228,6 +228,12 @@ pub async fn sync_appbar(app: AppHandle) {
 
 #[tauri::command]
 pub async fn change_dock_mode(app: AppHandle, mode: String) {
+    // A disabled dock keeps the new mode in settings (init_dock applies it on
+    // re-enable) but must not be shown or replace the native taskbar now.
+    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
+    if enabled != "true" {
+        return;
+    }
     if let Some(dock_win) = app.get_webview_window("dock") {
         if mode == "fixed" {
             register_dock_appbar(dock_win.clone());
