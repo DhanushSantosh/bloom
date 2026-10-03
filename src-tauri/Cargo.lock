@@ -431,6 +431,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-updater",
  "tokio",
+ "webview2-com",
  "window-vibrancy 0.7.1",
  "windows 0.61.3",
  "wmi",

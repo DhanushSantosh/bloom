@@ -291,6 +291,7 @@ fn main() {
                 });
             }
 
+            watch_webview_processes(app.handle());
             setup_mouse_hook(app.handle().clone());
             setup_display_change_monitor(app.handle().clone());
             setup_window_change_hook(app.handle().clone());
