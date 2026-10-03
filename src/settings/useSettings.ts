@@ -128,7 +128,7 @@ export function useSettings() {
 	const loadAllSettings = useCallback(async () => {
 		try {
 			const settings: Record<string, string> = await invoke("load_settings");
-			if (reloadIfMirrorWasStale(settings)) return;
+			if (await reloadIfMirrorWasStale(settings)) return;
 			const getVal = (key: string) => {
 				const val = settings[key];
 				if (val !== undefined && val !== null) return String(val);

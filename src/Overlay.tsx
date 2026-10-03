@@ -622,8 +622,8 @@ function OverlayApp() {
 	// Load scale from settings
 	useEffect(() => {
 		invoke("load_settings")
-			.then((settings: any) => {
-				if (reloadIfMirrorWasStale(settings)) return;
+			.then(async (settings: any) => {
+				if (await reloadIfMirrorWasStale(settings)) return;
 				if (settings && settings["bloom-scale"] !== undefined) {
 					setScale(parseFloat(settings["bloom-scale"]));
 				}

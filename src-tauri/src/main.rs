@@ -145,6 +145,7 @@ fn main() {
             clear_volume_mixer_rect,
             save_setting,
             load_settings,
+            settings_file_readable,
             capture_window_thumbnail,
             get_wifi_status,
             set_wifi_state,
