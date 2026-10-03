@@ -3354,6 +3354,10 @@ pub fn import_settings(app: AppHandle, settings: String) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    let previous: HashMap<String, serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default();
 
     let content = serde_json::to_string_pretty(&imported).map_err(|e| e.to_string())?;
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
@@ -3365,6 +3369,19 @@ pub fn import_settings(app: AppHandle, settings: String) -> Result<(), String> {
         let _ = app.emit(
             "settings-changed",
             serde_json::json!({ "key": key, "value": value }),
+        );
+    }
+
+    // Keys the imported file doesn't have must leave each window's localStorage
+    // mirror too, or they come back from it on the next start. Same sentinels
+    // as reset_settings are kept.
+    let keep = ["bloom-first-run", "bloom-app-version"];
+    for key in previous.keys().filter(|key| {
+        key.starts_with("bloom-") && !keep.contains(&key.as_str()) && !imported.contains_key(*key)
+    }) {
+        let _ = app.emit(
+            "settings-external-changed",
+            serde_json::json!({ "key": key, "value": null }),
         );
     }
 

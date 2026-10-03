@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import "./Dock.css";
 import { initTheme } from "./theme";
 import { useSettingsSync } from "./hooks/useSettingsSync";
+import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 
 interface AppInfo {
 	name: string;
@@ -239,6 +240,7 @@ const Dock = memo(function Dock() {
 	useEffect(() => {
 		const init = async () => {
 			const settings: any = await invoke("load_settings").catch(() => ({}));
+			if (reloadIfMirrorWasStale(settings)) return;
 			const getVal = (key: string, fallback: string | null = null) => {
 				const val = settings[key];
 				if (val !== undefined && val !== null) return String(val);
