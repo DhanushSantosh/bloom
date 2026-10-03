@@ -1417,6 +1417,10 @@ pub fn setup_system_worker(app_handle: AppHandle) -> Sender<SystemCommand> {
         let mut osd_sync_ticks = 0u32;
 
         loop {
+            if SHUTTING_DOWN.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                continue;
+            }
             unsafe {
                 let now = Instant::now();
                 if now.duration_since(last_monitor_update) > Duration::from_millis(1000) {
@@ -2127,6 +2131,9 @@ fn volume_mixer_physical_rect_for(app: &AppHandle) -> Option<(i32, i32, i32, i32
 fn setup_volume_mixer_watchdog(app_handle: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(200));
+        if SHUTTING_DOWN.load(Ordering::Relaxed) {
+            continue;
+        }
         let Some((rx, ry, rw, rh)) = volume_mixer_physical_rect_for(&app_handle) else {
             continue;
         };
@@ -2229,6 +2236,9 @@ fn is_capture_ui_present() -> bool {
 }
 
 fn apply_capture_ui_state(app: &AppHandle, active: bool) {
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(main_win) = app.get_webview_window("main") {
         if active {
             let _ = main_win.set_ignore_cursor_events(true);
@@ -2466,7 +2476,7 @@ fn update_main_interaction(
 fn setup_top_edge_watchdog(app_handle: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(TOP_EDGE_POLL_MS));
-        if CAPTURE_UI_ACTIVE.load(Ordering::Relaxed) {
+        if CAPTURE_UI_ACTIVE.load(Ordering::Relaxed) || SHUTTING_DOWN.load(Ordering::Relaxed) {
             continue;
         }
         if MH_TOP_EDGE_ENTER_MS.load(Ordering::Relaxed) == 0
@@ -2488,7 +2498,7 @@ unsafe extern "system" fn mouse_hook_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    if code >= 0 && wparam.0 == WM_MOUSEMOVE as usize {
+    if code >= 0 && wparam.0 == WM_MOUSEMOVE as usize && !SHUTTING_DOWN.load(Ordering::Relaxed) {
         // Throttle to ~30fps (32ms) to match old polling cadence.
         // Without this, state checks and set_ignore_cursor_events fire on
         // every pixel of cursor movement, causing notch flicker at edges.
@@ -3622,6 +3632,9 @@ pub fn unregister_appbar_native(hwnd: HWND) {
 }
 
 fn reposition_all_windows(app_handle: &AppHandle) {
+    if SHUTTING_DOWN.load(Ordering::Relaxed) {
+        return;
+    }
     reconcile_main_appbar(app_handle);
     // Only reposition the dock if it's enabled in settings.
     // Without this guard, power events (plug/unplug, wake) would re-show

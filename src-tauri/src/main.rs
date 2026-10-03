@@ -357,6 +357,7 @@ fn main() {
                     .menu(&menu)
                     .on_menu_event(move |_, event| match event.id().as_ref() {
                         "quit" => {
+                            SHUTTING_DOWN.store(true, Ordering::Relaxed);
                             if let Some(w) = ah.get_webview_window("main") {
                                 unregister_appbar_native(w.hwnd().unwrap());
                             }
@@ -370,6 +371,7 @@ fn main() {
                             ah.exit(0);
                         }
                         "restart" => {
+                            SHUTTING_DOWN.store(true, Ordering::Relaxed);
                             if let Some(w) = ah.get_webview_window("main") {
                                 unregister_appbar_native(w.hwnd().unwrap());
                             }
