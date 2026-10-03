@@ -72,21 +72,33 @@ pub fn taskbar_marker_exists() -> bool {
     TASKBAR_MARKER.get().is_some_and(|p| p.exists())
 }
 
-pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
-    // Crash-recovery marker: a hidden taskbar is persisted so the next launch can
-    // undo it if we're ever force-killed (Task Manager / TerminateProcess skips cleanup).
-    if visible {
-        if let Some(p) = TASKBAR_MARKER.get() {
-            let _ = std::fs::remove_file(p);
-        }
-    } else {
-        if let Some(p) = TASKBAR_MARKER.get() {
-            if !p.exists() {
-                let _ = std::fs::write(p, b"1");
-            }
-        }
-    }
+/// The marker records the user's own taskbar state (`ABM_GETSTATE`) from
+/// before Bloom forced auto-hide, so a crash can't lose it. Markers written by
+/// older versions only contain "1" and carry no state.
+fn marker_contents(original_state: i32) -> String {
+    format!("abstate={original_state}")
+}
 
+fn parse_marker_state(contents: &str) -> Option<i32> {
+    contents.trim().strip_prefix("abstate=")?.parse().ok()
+}
+
+/// Restores the native taskbar after a previous session died with it hidden.
+/// The state saved in the marker becomes the original to restore; without it,
+/// the current state would be captured instead, and that is Bloom's own
+/// auto-hide.
+pub fn restore_taskbar_after_crash() {
+    let saved = TASKBAR_MARKER
+        .get()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| parse_marker_state(&contents));
+    if let Some(state) = saved {
+        ORIGINAL_TASKBAR_STATE.store(state, std::sync::atomic::Ordering::Relaxed);
+    }
+    set_taskbar_visibility(true, true);
+}
+
+pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     unsafe {
         use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -106,6 +118,20 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
             let original_state = SHAppBarMessage(ABM_GETSTATE, &mut get_abd);
             ORIGINAL_TASKBAR_STATE
                 .store(original_state as i32, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        // Crash-recovery marker: a hidden taskbar is persisted so the next launch can
+        // undo it if we're ever force-killed (Task Manager / TerminateProcess skips cleanup).
+        // Written after the original state is known, so the marker can carry it.
+        if visible {
+            if let Some(p) = TASKBAR_MARKER.get() {
+                let _ = std::fs::remove_file(p);
+            }
+        } else if let Some(p) = TASKBAR_MARKER.get() {
+            if !p.exists() {
+                let original = ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = std::fs::write(p, marker_contents(original));
+            }
         }
 
         let state_val = if visible {
@@ -884,7 +910,24 @@ pub fn capture_hwnd_to_base64(hwnd: HWND, max_width: u32, max_height: u32) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::expand_env_vars;
+    use super::{expand_env_vars, marker_contents, parse_marker_state};
+
+    #[test]
+    fn taskbar_marker_round_trips_the_original_state() {
+        for state in [0, 1, 2, 3] {
+            assert_eq!(parse_marker_state(&marker_contents(state)), Some(state));
+        }
+    }
+
+    #[test]
+    fn legacy_and_damaged_markers_carry_no_state() {
+        // Older versions wrote a bare "1": it must not be read as auto-hide.
+        assert_eq!(parse_marker_state("1"), None);
+        assert_eq!(parse_marker_state(""), None);
+        assert_eq!(parse_marker_state("abstate="), None);
+        assert_eq!(parse_marker_state("abstate=x"), None);
+        assert_eq!(parse_marker_state("abstate=2\r\n"), Some(2));
+    }
 
     #[test]
     fn env_expansion() {
