@@ -2636,6 +2636,7 @@ pub fn restore_taskbar_and_exit(handle: &AppHandle) {
     release_appbars(handle);
     set_taskbar_visibility(true, true);
     NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    crate::services::set_native_osd_suppressed(false);
     // Destroy all webview windows before exiting so Chromium's UnregisterClass for
     // Chrome_WidgetWin_0 finds no open windows (avoids the harmless Error=1412 log).
     for (_, w) in handle.webview_windows() {
@@ -2663,6 +2664,7 @@ pub async fn restart_bloom(handle: AppHandle) {
     }
     set_taskbar_visibility(true, true);
     NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    crate::services::set_native_osd_suppressed(false);
     close_single_instance_handles();
     handle.restart();
 }

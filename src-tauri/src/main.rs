@@ -22,6 +22,7 @@ unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> BOOL {
     if ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT || ctrl_type == CTRL_CLOSE_EVENT {
         set_taskbar_visibility(true, true);
         NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+        set_native_osd_suppressed(false);
     }
     BOOL(0)
 }
@@ -363,6 +364,7 @@ fn main() {
                             }
                             set_taskbar_visibility(true, true);
                             NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+                            set_native_osd_suppressed(false);
 
                             ah.exit(0);
                         }
@@ -379,6 +381,7 @@ fn main() {
                             }
                             set_taskbar_visibility(true, true);
                             NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+                            set_native_osd_suppressed(false);
                             close_single_instance_handles();
 
                             ah.restart();
@@ -408,6 +411,7 @@ fn main() {
         if let tauri::RunEvent::Exit = event {
             set_taskbar_visibility(true, true);
             NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+            set_native_osd_suppressed(false);
         }
     });
 }
