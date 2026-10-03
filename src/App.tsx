@@ -22,6 +22,7 @@ import { useWeather } from "./hooks/useWeather";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTrailingThrottle } from "./hooks/useTrailingThrottle";
 import { useAnnouncement } from "./hooks/useAnnouncement";
+import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { WidgetConfig } from "./components/StatusWidgetConfig";
 import {
@@ -824,6 +825,7 @@ function App() {
 
 		invoke("load_settings")
 			.then((settings: any) => {
+				if (reloadIfMirrorWasStale(settings)) return;
 				const getVal = (key: string, fallback: string | null = null) => {
 					const val = settings[key];
 					if (val !== undefined && val !== null) return String(val);
