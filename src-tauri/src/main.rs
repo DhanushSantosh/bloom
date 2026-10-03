@@ -180,7 +180,7 @@ fn main() {
             // taskbar was hidden, restore it now. Runs before the frontend re-hides it
             // (init_dock fires after a delay), so the flag must be removed first.
             if taskbar_marker_exists() {
-                set_taskbar_visibility(true, true);
+                restore_taskbar_after_crash();
                 NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
             }
 
