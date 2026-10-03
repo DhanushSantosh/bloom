@@ -93,6 +93,12 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
             FindWindowA, GetWindowRect, ShowWindow, SW_HIDE, SW_SHOW,
         };
 
+        // Startup retries and display/AppBar handlers can still try to hide the
+        // taskbar after shutdown restored it, leaving the user without one.
+        if !visible && crate::state::SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+
         let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
         let secondary_tray_class =
             windows::core::PCSTR(c"Shell_SecondaryTrayWnd".as_ptr() as *const u8);
