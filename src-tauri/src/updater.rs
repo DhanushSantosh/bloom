@@ -217,6 +217,11 @@ async fn install_inner(app: &AppHandle) -> Result<(), String> {
     let updater = app
         .updater_builder()
         .on_before_exit(move || {
+            // The installer exits the process without going through
+            // restore_taskbar_and_exit, so do the same teardown here.
+            crate::state::SHUTTING_DOWN.store(true, Ordering::Relaxed);
+            crate::commands::release_appbars(&hook_handle);
+            crate::utils::set_taskbar_visibility(true, true);
             let _ = hook_handle.emit(
                 "auto-update-status",
                 serde_json::json!({ "status": "installing" }),

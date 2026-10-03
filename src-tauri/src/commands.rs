@@ -2613,12 +2613,8 @@ pub fn clear_volume_mixer_rect() {
     }
 }
 
-/// Restore the native taskbar, unregister Bloom's appbars, and exit gracefully.
-/// Shared by the tray menu, the in-app Quit button, and the window CloseRequested
-/// handlers so that any shutdown path (including Task Manager's WM_CLOSE) behaves
-/// identically.
-pub fn restore_taskbar_and_exit(handle: &AppHandle) {
-    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+/// Unregisters the notch and dock AppBars so Windows gives their work area back.
+pub fn release_appbars(handle: &AppHandle) {
     if let Some(w) = handle.get_webview_window("main") {
         if MAIN_APPBAR_REGISTERED.load(Ordering::Relaxed) {
             unregister_appbar_native(w.hwnd().unwrap());
@@ -2629,6 +2625,15 @@ pub fn restore_taskbar_and_exit(handle: &AppHandle) {
             unregister_appbar_native(w.hwnd().unwrap());
         }
     }
+}
+
+/// Restore the native taskbar, unregister Bloom's appbars, and exit gracefully.
+/// Shared by the tray menu, the in-app Quit button, and the window CloseRequested
+/// handlers so that any shutdown path (including Task Manager's WM_CLOSE) behaves
+/// identically.
+pub fn restore_taskbar_and_exit(handle: &AppHandle) {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+    release_appbars(handle);
     set_taskbar_visibility(true, true);
     NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
     // Destroy all webview windows before exiting so Chromium's UnregisterClass for
