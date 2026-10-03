@@ -2739,6 +2739,19 @@ pub fn load_settings(app: AppHandle) -> Result<HashMap<String, serde_json::Value
     Ok(HashMap::new())
 }
 
+/// Whether settings.json exists and parses, which load_settings can't tell
+/// apart from a missing file since both load as an empty map.
+#[tauri::command]
+pub fn settings_file_readable(app: AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
+        .is_some_and(|content| {
+            serde_json::from_str::<HashMap<String, serde_json::Value>>(&content).is_ok()
+        })
+}
+
 #[tauri::command]
 pub async fn capture_window_thumbnail(
     hwnd: isize,

@@ -240,7 +240,7 @@ const Dock = memo(function Dock() {
 	useEffect(() => {
 		const init = async () => {
 			const settings: any = await invoke("load_settings").catch(() => ({}));
-			if (reloadIfMirrorWasStale(settings)) return;
+			if (await reloadIfMirrorWasStale(settings)) return;
 			const getVal = (key: string, fallback: string | null = null) => {
 				const val = settings[key];
 				if (val !== undefined && val !== null) return String(val);
