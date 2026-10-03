@@ -2420,8 +2420,7 @@ fn update_main_interaction(
                 let rx = win_pos.x + (r.x as f64 * scale) as i32 - pad_x - hyst;
                 let rw = (r.width as f64 * scale) as i32 + (pad_x * 2) + (hyst * 2);
                 let ry_top = win_pos.y;
-                let ry_bottom =
-                    win_pos.y + (r.height as f64 * scale) as i32 + pad_y_bottom + hyst;
+                let ry_bottom = win_pos.y + (r.height as f64 * scale) as i32 + pad_y_bottom + hyst;
 
                 let in_notch_rect = cursor.x >= rx
                     && cursor.x <= (rx + rw)
@@ -3851,6 +3850,71 @@ unsafe extern "system" fn display_monitor_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+static WEBVIEWS_WATCHED_AT: OnceLock<Instant> = OnceLock::new();
+static RECOVERING_FROM_WEBVIEW_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// If a webview's browser or renderer process exits (crash, or killed), the
+/// notch and dock windows stay on screen with dead content. They also stop
+/// switching click-through, so they keep swallowing clicks meant for the
+/// windows under them. Bloom restarts itself when that happens.
+pub fn watch_webview_processes(app: &AppHandle) {
+    let _ = WEBVIEWS_WATCHED_AT.set(Instant::now());
+    for (_, window) in app.webview_windows() {
+        let handle = app.clone();
+        let _ = window.with_webview(move |webview| unsafe {
+            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                COREWEBVIEW2_PROCESS_FAILED_KIND,
+                COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+                COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+            };
+            use webview2_com::ProcessFailedEventHandler;
+
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let mut token = 0i64;
+            let _ = core.add_ProcessFailed(
+                &ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                    args.ProcessFailedKind(&mut kind)?;
+                    if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+                        || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                    {
+                        recover_from_webview_failure(&handle);
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            );
+        });
+    }
+}
+
+fn recover_from_webview_failure(handle: &AppHandle) {
+    // Quitting destroys the webviews, which ends their processes too. And
+    // every window reports the same browser exit, so act once.
+    if SHUTTING_DOWN.load(Ordering::Relaxed)
+        || RECOVERING_FROM_WEBVIEW_FAILURE.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+    let started = WEBVIEWS_WATCHED_AT.get().map(Instant::elapsed);
+    let handle = handle.clone();
+    // Leave the WebView2 callback before touching windows.
+    tauri::async_runtime::spawn(async move {
+        // A webview that dies right after launch would die again after a
+        // restart, so give the taskbar back and exit instead of looping.
+        if started.is_some_and(|elapsed| elapsed < Duration::from_secs(30)) {
+            crate::commands::restore_taskbar_and_exit(&handle);
+        } else {
+            crate::commands::restart_bloom(handle).await;
+        }
+    });
 }
 
 #[cfg(test)]
