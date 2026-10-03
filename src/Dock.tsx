@@ -493,9 +493,9 @@ const Dock = memo(function Dock() {
 	const togglePin = async (app: AppInfo) => {
 		let newPinned;
 		if (app.is_pinned) {
-			newPinned = pinnedApps.filter((a) => a.path !== app.path);
+			newPinned = pinnedApps.filter((a) => itemKey(a) !== itemKey(app));
 		} else {
-			if (pinnedApps.find((a) => a.path === app.path)) return;
+			if (pinnedApps.find((a) => itemKey(a) === itemKey(app))) return;
 			newPinned = [...pinnedApps, { ...app, is_pinned: true, is_running: false, hwnd: undefined }];
 			fetchIcon(app.path, app.name);
 		}
@@ -668,11 +668,13 @@ const Dock = memo(function Dock() {
 		};
 	}, []);
 
-	const handleReorder = (newPaths: string[]) => {
-		const oldPaths = pinnedApps.map((p) => p.path);
-		if (JSON.stringify(newPaths) !== JSON.stringify(oldPaths)) {
-			const reordered = newPaths
-				.map((path) => pinnedApps.find((p) => p.path === path))
+	// Items are keyed by identity, not path: web apps running in the same
+	// browser share one executable path.
+	const handleReorder = (newKeys: string[]) => {
+		const oldKeys = pinnedApps.map(itemKey);
+		if (JSON.stringify(newKeys) !== JSON.stringify(oldKeys)) {
+			const reordered = newKeys
+				.map((key) => pinnedApps.find((p) => itemKey(p) === key))
 				.filter((p): p is AppInfo => !!p);
 			setPinnedApps(reordered);
 		}
@@ -891,15 +893,15 @@ const Dock = memo(function Dock() {
 								<Reorder.Group
 									as="div"
 									axis="x"
-									values={pinnedItems.map((i) => i.path)}
+									values={pinnedItems.map(itemKey)}
 									onReorder={handleReorder}
 									className="dock-reorder-group"
 								>
 									{pinnedItems.map((app) => (
 										<Reorder.Item
 											as="div"
-											key={app.path}
-											value={app.path}
+											key={itemKey(app)}
+											value={itemKey(app)}
 											style={{ position: "relative" }}
 											onDragStart={() => {
 												setIsDragging(true);
@@ -1050,7 +1052,7 @@ const Dock = memo(function Dock() {
 
 								{unpinnedItems.map((app) => (
 									<motion.div
-										key={app.path}
+										key={itemKey(app)}
 										layout
 										initial={{ opacity: 0, scale: 0 }}
 										animate={{
