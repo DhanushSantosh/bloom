@@ -22,6 +22,7 @@ import { useWeather } from "./hooks/useWeather";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTrailingThrottle } from "./hooks/useTrailingThrottle";
 import { useAnnouncement } from "./hooks/useAnnouncement";
+import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { WidgetConfig } from "./components/StatusWidgetConfig";
 import {
@@ -823,7 +824,8 @@ function App() {
 		if (!windowLabel) return;
 
 		invoke("load_settings")
-			.then((settings: any) => {
+			.then(async (settings: any) => {
+				if (await reloadIfMirrorWasStale(settings)) return;
 				const getVal = (key: string, fallback: string | null = null) => {
 					const val = settings[key];
 					if (val !== undefined && val !== null) return String(val);
@@ -2094,6 +2096,9 @@ function App() {
 													onLayoutChange={(layout) => {
 														setMediaLayout(layout);
 														localStorage.setItem("bloom-media-layout", layout);
+														invoke("save_setting", { key: "bloom-media-layout", value: layout }).catch(
+															console.error
+														);
 														window.dispatchEvent(
 															new CustomEvent("settings-changed", {
 																detail: { key: "media-layout", value: layout }
@@ -2112,6 +2117,10 @@ function App() {
 																e.stopPropagation();
 																setMediaLayout("compact");
 																localStorage.setItem("bloom-media-layout", "compact");
+																invoke("save_setting", {
+																	key: "bloom-media-layout",
+																	value: "compact"
+																}).catch(console.error);
 																window.dispatchEvent(
 																	new CustomEvent("settings-changed", {
 																		detail: { key: "media-layout", value: "compact" }

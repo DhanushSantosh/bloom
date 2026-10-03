@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { useTrailingThrottle } from "./hooks/useTrailingThrottle";
 import { getVersion } from "@tauri-apps/api/app";
+import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { MixerIcon, SpeakerIcon } from "./icons";
 import "./Overlay.css";
@@ -621,7 +622,8 @@ function OverlayApp() {
 	// Load scale from settings
 	useEffect(() => {
 		invoke("load_settings")
-			.then((settings: any) => {
+			.then(async (settings: any) => {
+				if (await reloadIfMirrorWasStale(settings)) return;
 				if (settings && settings["bloom-scale"] !== undefined) {
 					setScale(parseFloat(settings["bloom-scale"]));
 				}
