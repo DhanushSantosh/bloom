@@ -115,11 +115,7 @@ function SettingsApp() {
 									Learn more
 								</button>
 							)}
-							<button
-								className="announcement-banner-close"
-								onClick={dismiss}
-								title="Dismiss"
-							>
+							<button className="announcement-banner-close" onClick={dismiss} title="Dismiss">
 								<X size={12} strokeWidth={2.2} />
 							</button>
 						</div>

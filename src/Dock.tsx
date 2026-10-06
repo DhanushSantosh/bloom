@@ -1580,8 +1580,7 @@ function AddAppPopup({
 				)
 				.slice(0, 60);
 			const out: { title: string | null; items: AppInfo[] }[] = [];
-			if (runningSuggestions.length > 0)
-				out.push({ title: "Running", items: runningSuggestions });
+			if (runningSuggestions.length > 0) out.push({ title: "Running", items: runningSuggestions });
 			if (rest.length > 0) out.push({ title: "All apps", items: rest });
 			return out;
 		}
