@@ -1454,10 +1454,7 @@ function App() {
 		const initializeWifiStatus = async (attempt: number) => {
 			const loaded = await refreshWifiStatus();
 			if (!loaded && !cancelled && attempt < 3) {
-				retryTimer = setTimeout(
-					() => void initializeWifiStatus(attempt + 1),
-					(attempt + 1) * 1000
-				);
+				retryTimer = setTimeout(() => void initializeWifiStatus(attempt + 1), (attempt + 1) * 1000);
 			}
 		};
 		void initializeWifiStatus(0);
@@ -2096,9 +2093,10 @@ function App() {
 													onLayoutChange={(layout) => {
 														setMediaLayout(layout);
 														localStorage.setItem("bloom-media-layout", layout);
-														invoke("save_setting", { key: "bloom-media-layout", value: layout }).catch(
-															console.error
-														);
+														invoke("save_setting", {
+															key: "bloom-media-layout",
+															value: layout
+														}).catch(console.error);
 														window.dispatchEvent(
 															new CustomEvent("settings-changed", {
 																detail: { key: "media-layout", value: layout }
@@ -2747,7 +2745,9 @@ function App() {
 															style={{ width: `${displayVolume * 100}%` }}
 														/>
 													</div>
-													<span className="cc-classic-percentage">{Math.round(displayVolume * 100)}%</span>
+													<span className="cc-classic-percentage">
+														{Math.round(displayVolume * 100)}%
+													</span>
 												</div>
 
 												{/* Brightness Slider */}
@@ -2782,51 +2782,45 @@ function App() {
 
 								{/* Announcement Card */}
 								<AnimatePresence>
-									{bloomMode === "announcement" &&
-										announcement &&
-										!announcementDismissed && (
-											<motion.div
-												className={`announcement-content severity-${announcement.severity}`}
-												onClick={(e) => e.stopPropagation()}
-												initial={{ opacity: 0 }}
-												animate={{ opacity: 1 }}
-												exit={{
-													opacity: 0,
-													filter: "blur(4px)",
-													transition: { duration: 0.1 }
-												}}
-												transition={{ type: "spring", stiffness: 400, damping: 30 }}
-											>
-												<div className="announcement-header">
-													<div className="announcement-heading">
-														<Megaphone size={14} className="announcement-icon" />
-														<span className="announcement-title">
-															{announcement.title}
-														</span>
-													</div>
-													<button
-														className="announcement-close"
-														onClick={dismissAnnouncement}
-														title="Dismiss"
-													>
-														<X size={13} strokeWidth={2.2} />
-													</button>
+									{bloomMode === "announcement" && announcement && !announcementDismissed && (
+										<motion.div
+											className={`announcement-content severity-${announcement.severity}`}
+											onClick={(e) => e.stopPropagation()}
+											initial={{ opacity: 0 }}
+											animate={{ opacity: 1 }}
+											exit={{
+												opacity: 0,
+												filter: "blur(4px)",
+												transition: { duration: 0.1 }
+											}}
+											transition={{ type: "spring", stiffness: 400, damping: 30 }}
+										>
+											<div className="announcement-header">
+												<div className="announcement-heading">
+													<Megaphone size={14} className="announcement-icon" />
+													<span className="announcement-title">{announcement.title}</span>
 												</div>
-												{announcement.body && (
-													<p className="announcement-body">
-														{announcement.body}
-													</p>
-												)}
-												{announcement.url && (
-													<button
-														className="announcement-link"
-														onClick={() => openUrl(announcement.url!)}
-													>
-														Learn more
-													</button>
-												)}
-											</motion.div>
-										)}
+												<button
+													className="announcement-close"
+													onClick={dismissAnnouncement}
+													title="Dismiss"
+												>
+													<X size={13} strokeWidth={2.2} />
+												</button>
+											</div>
+											{announcement.body && (
+												<p className="announcement-body">{announcement.body}</p>
+											)}
+											{announcement.url && (
+												<button
+													className="announcement-link"
+													onClick={() => openUrl(announcement.url!)}
+												>
+													Learn more
+												</button>
+											)}
+										</motion.div>
+									)}
 								</AnimatePresence>
 
 								{/* Calendar & Timer Split View */}

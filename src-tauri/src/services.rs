@@ -3028,9 +3028,9 @@ pub fn trigger_app_scan() {
 }
 
 /// Filters out shell entries that are not real launchable apps (web links,
-/// documents, protocol handlers) so the add-app list stays clean.
+/// documents, protocol handlers, helpers) so the add-app list stays clean.
 fn is_launchable_entry(name: &str, path: &str) -> bool {
-    if name.is_empty() || name == "Unknown" || name.to_lowercase().contains("uninstall") {
+    if name.is_empty() || name == "Unknown" || is_helper_name(name) {
         return false;
     }
     let lower = path.to_lowercase();
@@ -3049,6 +3049,32 @@ fn is_launchable_entry(name: &str, path: &str) -> bool {
     true
 }
 
+/// Companion/helper entries nobody pins: uninstallers, installers, help and
+/// documentation, troubleshooters. Matched on whole words only — substring
+/// matching would nuke legit names like "Helper" or "Remover".
+fn is_helper_name(name: &str) -> bool {
+    const HELPER_WORDS: &[&str] = &[
+        "uninstall",
+        "uninstaller",
+        "installer",
+        "setup",
+        "help",
+        "readme",
+        "manual",
+        "documentation",
+        "troubleshoot",
+        "troubleshooting",
+        "repair",
+    ];
+    let lower = name.to_lowercase();
+    if lower.contains("release notes") {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| HELPER_WORDS.contains(&token))
+}
+
 fn collect_shortcuts(dir: &std::path::Path, apps: &mut Vec<AppInfo>, depth: i32) {
     if depth > 3 {
         return;
@@ -3063,7 +3089,7 @@ fn collect_shortcuts(dir: &std::path::Path, apps: &mut Vec<AppInfo>, depth: i32)
                 .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
             {
                 let name = path.file_stem().unwrap().to_string_lossy().to_string();
-                if name.to_lowercase().contains("uninstall") || name.starts_with("Install") {
+                if is_helper_name(&name) || name.starts_with("Install") {
                     continue;
                 }
 
@@ -3919,7 +3945,9 @@ fn recover_from_webview_failure(handle: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{notch_mode_reserves_work_area, win_number_index};
+    use super::{
+        is_helper_name, is_launchable_entry, notch_mode_reserves_work_area, win_number_index,
+    };
 
     #[test]
     fn win_number_maps_top_row_digits_only() {
@@ -3941,5 +3969,23 @@ mod tests {
         assert!(!notch_mode_reserves_work_area(Some("auto-hide")));
         // Unset defaults to fixed, matching SETTINGS.md
         assert!(notch_mode_reserves_work_area(None));
+    }
+
+    #[test]
+    fn helper_shortcuts_are_not_launchable() {
+        assert!(is_helper_name("Uninstall Brave"));
+        assert!(is_helper_name("7-Zip Help"));
+        assert!(is_helper_name("Readme"));
+        assert!(is_helper_name("Get Help"));
+        // Whole-word matching: legit names containing helper words survive.
+        assert!(!is_helper_name("Helper"));
+        assert!(!is_helper_name("Photo Remover"));
+        assert!(!is_helper_name("7-Zip File Manager"));
+        assert!(!is_helper_name("Brave"));
+        assert!(!is_launchable_entry("Docs", "https://example.com"));
+        assert!(is_launchable_entry(
+            "Brave",
+            "C:\\Program Files\\Brave\\brave.exe"
+        ));
     }
 }

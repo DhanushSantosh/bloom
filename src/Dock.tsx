@@ -42,6 +42,47 @@ export function appIdentity(p: string, executable?: string, name?: string) {
 
 const itemKey = (app: AppInfo) => appIdentity(app.path, app.executable, app.name);
 
+// Fuzzy identity: a running window and its installed/pinned entry often carry
+// different paths (exe vs .lnk vs AUMID), so exact keys miss and the same app
+// looks pinnable twice. Mirrors the dock list's own pinned↔running matching.
+export function isSameApp(a: AppInfo, b: AppInfo): boolean {
+	if (!a.path || !b.path) return false;
+	if (itemKey(a) === itemKey(b)) return true;
+	// Browser hosts run many apps under one exe — only the full identity
+	// (which folds in the window/AUMID name) can match those.
+	if (isBrowserHost(a.path) || isBrowserHost(b.path)) return false;
+	const aId = isIdentifier(a.path);
+	const bId = isIdentifier(b.path);
+	// Two opaque shell ids match only exactly (checked above).
+	if (aId && bId) return false;
+	if (aId !== bId) {
+		// One side is a shell id (AUMID), the other a file path. AUMIDs embed
+		// the product name (ZedIndustries.Zed, com.squirrel.Figma.Figma), so
+		// match on overlapping display names plus id/stem cross-containment.
+		// This is the common shape: installed entries come from the AppsFolder
+		// scan (AUMID) while pinned entries are exe/.lnk paths.
+		const fileSide = aId ? b : a;
+		const idLower = (aId ? a : b).path.toLowerCase();
+		const na = a.name.toLowerCase();
+		const nb = b.name.toLowerCase();
+		if (na !== nb && !na.includes(nb) && !nb.includes(na)) return false;
+		const stem = (fileSide.executable?.toLowerCase() || fileOf(fileSide.path)).replace(
+			/\.(exe|lnk)$/,
+			""
+		);
+		return stem.length >= 3 && idLower.includes(stem);
+	}
+	if (appIdentity(a.path) === appIdentity(b.path)) return true;
+	const normExe = (s: string) => (s.endsWith(".exe") ? s : `${s}.exe`);
+	const aExe = a.executable?.toLowerCase() || fileOf(a.path);
+	const bExe = b.executable?.toLowerCase() || fileOf(b.path);
+	if (!aExe || !bExe) return false;
+	return normExe(aExe) === normExe(bExe);
+}
+
+const fileOf = (p: string) =>
+	(p.split("/").pop()?.split("\\").pop()?.toLowerCase() || "").replace(/\.lnk$/, "");
+
 // Shell application ids (AUMIDs) identify one specific app; two different PWAs
 // running in the same browser must never be matched by their shared exe name.
 const isIdentifier = (p: string) => !p.includes("/") && !p.includes("\\");
@@ -133,6 +174,7 @@ const Dock = memo(function Dock() {
 	const iconPickerTargetRef = useRef<string | null>(null);
 	const toastTimerRef = useRef<any>(null);
 	const dockRef = useRef<HTMLDivElement>(null);
+	const [popupBottom, setPopupBottom] = useState(56);
 	const pinnedItemsRef = useRef<AppInfo[]>([]);
 	const handleAppClickRef = useRef<(app: AppInfo) => void>(() => {});
 	const [scale, setScale] = useState(() =>
@@ -145,6 +187,16 @@ const Dock = memo(function Dock() {
 		window.addEventListener("resize", onResize);
 		return () => window.removeEventListener("resize", onResize);
 	}, []);
+
+	// Measure the dock pill when the popup opens; the card tucks ~14px
+	// behind the pill (which paints above it), so the seam stays fused even
+	// if the measurement is off by a few px at some scale.
+	useEffect(() => {
+		if (showAddPopup) {
+			const h = dockRef.current?.getBoundingClientRect().height ?? 0;
+			if (h > 0) setPopupBottom(h / (scale || 1) - 14);
+		}
+	}, [showAddPopup, scale]);
 
 	const isCurrentlyHovered = isDockHovered || isEdgeHovered;
 	const [interactionState, setInteractionState] = useState<"active" | "grace" | "none">("none");
@@ -284,6 +336,10 @@ const Dock = memo(function Dock() {
 			const pinned = await invoke<AppInfo[]>("load_pinned_apps");
 			setPinnedApps(pinned.map((a) => ({ ...a, is_pinned: true })));
 			pinned.forEach((app) => fetchIcon(app.path));
+
+			// Warm the installed-apps cache in the background so the add-app
+			// popup opens with data ready instead of waiting on the scan.
+			invoke<AppInfo[]>("get_installed_apps").catch(() => {});
 
 			// Load custom icons
 			try {
@@ -511,7 +567,9 @@ const Dock = memo(function Dock() {
 		if (app.is_pinned) {
 			newPinned = pinnedApps.filter((a) => itemKey(a) !== itemKey(app));
 		} else {
-			if (pinnedApps.find((a) => itemKey(a) === itemKey(app))) return;
+			// Fuzzy guard: the same app pinned via another entry shape (running
+			// window vs installed shortcut) must never create a duplicate.
+			if (pinnedApps.some((a) => isSameApp(a, app))) return;
 			newPinned = [...pinnedApps, { ...app, is_pinned: true, is_running: false, hwnd: undefined }];
 			fetchIcon(app.path, app.name);
 		}
@@ -1431,6 +1489,9 @@ const Dock = memo(function Dock() {
 							closePopup();
 						}}
 						scale={scale}
+						runningApps={activeApps}
+						pinned={pinnedApps}
+						bottom={popupBottom}
 					/>
 				)}
 			</AnimatePresence>
@@ -1457,12 +1518,18 @@ function AddAppPopup({
 	onClose,
 	onAdd,
 	containerRef,
-	scale
+	scale,
+	runningApps,
+	pinned,
+	bottom
 }: {
 	onClose: () => void;
 	onAdd: (app: AppInfo) => void;
 	containerRef: React.RefObject<HTMLDivElement | null>;
 	scale: number;
+	runningApps: AppInfo[];
+	pinned: AppInfo[];
+	bottom: number;
 }) {
 	const [apps, setApps] = useState<AppInfo[]>([]);
 	const [search, setSearch] = useState("");
@@ -1472,6 +1539,7 @@ function AddAppPopup({
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const listRef = useRef<HTMLDivElement>(null);
+	const mountedRef = useRef(false);
 
 	useEffect(() => {
 		const timer = setTimeout(() => setDebouncedSearch(search), 150);
@@ -1487,10 +1555,71 @@ function AddAppPopup({
 		setSelectedIndex(0);
 	}, [debouncedSearch]);
 
-	// Scroll selected item into view
+	// Running, unpinned apps — already in memory, so the default view is
+	// instant and relevant instead of the first 20 alphabetical installs.
+	// Pinned matching is fuzzy: a pinned .lnk and its running .exe are the
+	// same app and must not show up as pinnable again.
+	const runningSuggestions = useMemo(
+		() => runningApps.filter((a) => a.path !== "start" && !pinned.some((p) => isSameApp(p, a))),
+		[runningApps, pinned]
+	);
+
+	const sections = useMemo(() => {
+		const s = debouncedSearch.trim().toLowerCase();
+		// No query: running apps first, then the full installed list.
+		// Already-pinned entries are excluded; backend filters helper junk
+		// (uninstallers, help/readme entries) out of the scan itself.
+		if (!s) {
+			const runningIds = new Set(runningSuggestions.map((a) => itemKey(a)));
+			const rest = apps
+				.filter(
+					(a) =>
+						a.path !== "start" &&
+						!pinned.some((p) => isSameApp(p, a)) &&
+						!runningIds.has(itemKey(a))
+				)
+				.slice(0, 60);
+			const out: { title: string | null; items: AppInfo[] }[] = [];
+			if (runningSuggestions.length > 0) out.push({ title: "Running", items: runningSuggestions });
+			if (rest.length > 0) out.push({ title: "All apps", items: rest });
+			return out;
+		}
+		const starts: AppInfo[] = [];
+		const contains: AppInfo[] = [];
+		for (const a of apps) {
+			// Search covers everything, including pinned — unlike the browse
+			// view, which skips what's already on the dock.
+			if (a.path === "start") continue;
+			const n = a.name.toLowerCase();
+			if (n.startsWith(s)) starts.push(a);
+			else if (n.includes(s)) contains.push(a);
+		}
+		const byName = (x: AppInfo, y: AppInfo) => x.name.localeCompare(y.name);
+		starts.sort(byName);
+		contains.sort(byName);
+		return [{ title: null, items: [...starts, ...contains].slice(0, 50) }];
+	}, [apps, debouncedSearch, pinned, runningSuggestions]);
+
+	// Flat selectable list; section headers are not selectable.
+	const flat = useMemo(() => sections.flatMap((s) => s.items), [sections]);
+	const flatIndex = useMemo(() => new Map(flat.map((a, i) => [a, i])), [flat]);
+
+	// Keep selection in range as results narrow.
 	useEffect(() => {
+		setSelectedIndex((i) => Math.min(i, Math.max(0, flat.length - 1)));
+	}, [flat.length]);
+
+	// Scroll selected item into view on keyboard nav only — never on mount,
+	// where it yanks the freshly-opened list and reads as jitter.
+	useEffect(() => {
+		if (!mountedRef.current) {
+			mountedRef.current = true;
+			return;
+		}
 		if (!listRef.current) return;
-		const row = listRef.current.children[selectedIndex] as HTMLElement | undefined;
+		const row = listRef.current.querySelector(
+			`[data-idx="${selectedIndex}"]`
+		) as HTMLElement | null;
 		if (row) row.scrollIntoView({ block: "nearest" });
 	}, [selectedIndex]);
 
@@ -1506,12 +1635,6 @@ function AddAppPopup({
 		load();
 	}, []);
 
-	const filtered = useMemo(() => {
-		const s = debouncedSearch.toLowerCase();
-		if (!s) return apps.slice(0, 20);
-		return apps.filter((a) => a.name.toLowerCase().includes(s)).slice(0, 50);
-	}, [apps, debouncedSearch]);
-
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
@@ -1520,15 +1643,17 @@ function AddAppPopup({
 			}
 			if (e.key === "ArrowDown") {
 				e.preventDefault();
-				setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+				setSelectedIndex((i) => Math.min(i + 1, flat.length - 1));
 			} else if (e.key === "ArrowUp") {
 				e.preventDefault();
 				setSelectedIndex((i) => Math.max(i - 1, 0));
 			} else if (e.key === "Enter") {
 				e.preventDefault();
-				if (filtered[selectedIndex]) {
-					onAdd(filtered[selectedIndex]);
-				}
+				const target = flat[selectedIndex];
+				if (!target) return;
+				// Already on the dock: just dismiss, never pin twice.
+				if (pinned.some((p) => isSameApp(p, target))) onClose();
+				else onAdd(target);
 			}
 		};
 		const handleMouseDown = (e: MouseEvent) => {
@@ -1546,53 +1671,49 @@ function AddAppPopup({
 			window.removeEventListener("blur", handleBlur);
 			document.removeEventListener("mousedown", handleMouseDown, true);
 		};
-	}, [onClose, containerRef, filtered, selectedIndex, onAdd]);
+	}, [onClose, containerRef, flat, selectedIndex, onAdd, pinned]);
 
+	// Fetch visible icons in parallel and commit as one batch. The old
+	// sequential 20ms-per-icon loop popped icons in one by one, which read as
+	// the list shifting after open. Row and icon boxes are fixed-size and
+	// images fade in via onLoad, so late icons never move layout.
 	useEffect(() => {
 		let active = true;
-		const fetchVisibleIcons = async () => {
-			let batch: Record<string, string> = {};
-			let count = 0;
-			for (const app of filtered) {
-				if (!active) break;
-				if (!listIcons[app.path]) {
-					await new Promise((r) => setTimeout(r, 20));
-					try {
-						const icon = await invoke<string | null>("get_app_icon", { path: app.path });
-						if (icon && active) {
-							batch[app.path] = icon;
-							count++;
-							if (count >= 6) {
-								setListIcons((prev) => ({ ...prev, ...batch }));
-								batch = {};
-								count = 0;
-							}
-						}
-					} catch (err) {
-						console.error(err);
-					}
+		const targets = flat.slice(0, 25).filter((a) => !listIcons[a.path]);
+		if (targets.length === 0) return;
+		Promise.all(
+			targets.map(async (app) => {
+				try {
+					const icon = await invoke<string | null>("get_app_icon", { path: app.path });
+					return [app.path, icon] as const;
+				} catch (err) {
+					console.error(err);
+					return [app.path, null] as const;
 				}
-			}
-			if (active && count > 0) setListIcons((prev) => ({ ...prev, ...batch }));
-		};
-		fetchVisibleIcons();
+			})
+		).then((pairs) => {
+			if (!active) return;
+			const batch: Record<string, string> = {};
+			for (const [path, icon] of pairs) if (icon) batch[path] = icon;
+			if (Object.keys(batch).length > 0) setListIcons((prev) => ({ ...prev, ...batch }));
+		});
 		return () => {
 			active = false;
 		};
-	}, [filtered]);
+	}, [flat, listIcons]);
 
 	return (
-		<div className="add-popup-anchor" style={{ zoom: scale }}>
+		<div className="add-popup-anchor" style={{ zoom: scale, bottom }}>
 			<motion.div
 				ref={containerRef}
 				className="add-app-popup"
 				style={{ transformOrigin: "bottom center" }}
 				initial={{ opacity: 0, scaleY: 0 }}
 				animate={{ opacity: 1, scaleY: 1 }}
-				exit={{ opacity: 0, scaleY: 0 }}
+				exit={{ opacity: 0, scaleY: 0, transition: { duration: 0.16, ease: "easeIn" } }}
 				transition={{
 					opacity: { duration: 0.15 },
-					scaleY: { type: "spring", stiffness: 500, damping: 30, mass: 0.8 }
+					scaleY: { type: "spring", stiffness: 300, damping: 28, mass: 0.9 }
 				}}
 				onClick={(e) => e.stopPropagation()}
 			>
@@ -1622,33 +1743,59 @@ function AddAppPopup({
 				</div>
 				<div className="popup-apps-scroll" ref={listRef}>
 					{loading ? (
-						<div className="popup-loading">
-							<div className="popup-spinner" />
-						</div>
-					) : filtered.length > 0 ? (
-						filtered.map((app, idx) => {
-							const icon = listIcons[app.path];
-							return (
-								<div
-									key={app.path}
-									className={`popup-app-row${idx === selectedIndex ? " selected" : ""}`}
-									onClick={() => onAdd(app)}
-									onMouseEnter={() => setSelectedIndex(idx)}
-								>
-									<div className="popup-app-icon">
-										{icon ? (
-											<img src={icon} alt="" draggable={false} />
-										) : (
-											<span className="popup-app-initial">{app.name[0]}</span>
-										)}
-									</div>
-									<span className="popup-app-name">{app.name}</span>
-									<span className="popup-app-pin">+</span>
+						<div aria-hidden>
+							{Array.from({ length: 8 }, (_, i) => (
+								<div className="popup-app-row popup-skeleton-row" key={i}>
+									<div className="popup-app-icon popup-skeleton-box" />
+									<div className="popup-skeleton-line" />
 								</div>
-							);
-						})
+							))}
+						</div>
+					) : flat.length > 0 ? (
+						sections.map((sec) => (
+							<div key={sec.title ?? "all"}>
+								{sec.title && <div className="popup-section-label">{sec.title}</div>}
+								{sec.items.map((app) => {
+									const gi = flatIndex.get(app) ?? 0;
+									const icon = listIcons[app.path];
+									const alreadyPinned = pinned.some((p) => isSameApp(p, app));
+									return (
+										<div
+											key={`${app.path}::${app.name}`}
+											data-idx={gi}
+											className={`popup-app-row${gi === selectedIndex ? " selected" : ""}${alreadyPinned ? " is-pinned" : ""}`}
+											onClick={() => (alreadyPinned ? onClose() : onAdd(app))}
+											onMouseEnter={() => setSelectedIndex(gi)}
+										>
+											<div className="popup-app-icon">
+												{icon ? (
+													<img
+														key={icon}
+														src={icon}
+														alt=""
+														draggable={false}
+														style={{ opacity: 0 }}
+														onLoad={(e) => {
+															e.currentTarget.style.opacity = "1";
+														}}
+													/>
+												) : (
+													<span className="popup-app-initial">{app.name[0]}</span>
+												)}
+											</div>
+											<span className="popup-app-name">{app.name}</span>
+											<span className="popup-app-pin">{alreadyPinned ? "✓" : "+"}</span>
+										</div>
+									);
+								})}
+							</div>
+						))
 					) : (
-						<div className="popup-empty">No results</div>
+						<div className="popup-empty">
+							{debouncedSearch.trim()
+								? "No results"
+								: "Running apps show up here — search to pin anything else"}
+						</div>
 					)}
 				</div>
 			</motion.div>
