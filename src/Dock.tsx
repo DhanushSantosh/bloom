@@ -399,20 +399,16 @@ const Dock = memo(function Dock() {
 			// Ignore responses that arrive out of order: an older poll must never
 			// overwrite a newer state, which would resurrect closed apps.
 			if (stopped || seq !== pollSeq) return;
-			const selected = selectDockTrayApps(
-				windows,
-				tray,
-				observedTrayPathsRef.current,
-				(app) =>
-					pinnedApps.some((pinned) =>
-						isSameApp(pinned, {
-							name: app.name,
-							path: app.path,
-							icon: null,
-							is_running: true,
-							executable: fileOf(app.path)
-						})
-					)
+			const selected = selectDockTrayApps(windows, tray, observedTrayPathsRef.current, (app) =>
+				pinnedApps.some((pinned) =>
+					isSameApp(pinned, {
+						name: app.name,
+						path: app.path,
+						icon: null,
+						is_running: true,
+						executable: fileOf(app.path)
+					})
+				)
 			);
 			observedTrayPathsRef.current = selected.observed;
 			const running = mergeTrayApps(windows, selected.visible);
@@ -1212,9 +1208,15 @@ const Dock = memo(function Dock() {
 									))}
 								</Reorder.Group>
 
-								{dockSeparatorEnabled && unpinnedItems.length > 0 && (pinnedItems.length > 0 || startItem) && (
-									<div className="dock-app-divider" role="separator" aria-orientation="vertical" />
-								)}
+								{dockSeparatorEnabled &&
+									unpinnedItems.length > 0 &&
+									(pinnedItems.length > 0 || startItem) && (
+										<div
+											className="dock-app-divider"
+											role="separator"
+											aria-orientation="vertical"
+										/>
+									)}
 
 								{unpinnedItems.map((app) => (
 									<motion.div
@@ -1415,27 +1417,8 @@ const Dock = memo(function Dock() {
 							<div className="menu-divider" />
 						</div>
 					)}
-					{contextMenu.app?.tray_ids?.map((id, index, ids) => (
-						<div key={id} className="menu-item" onClick={() => void openTrayMenu(id)}>
-							{ids.length > 1 ? `Tray menu ${index + 1}` : "App tray menu"}
-						</div>
-					))}
 					{contextMenu.app ? (
 						<>
-							{contextMenu.app.is_running && contextMenu.app.path !== "start" && (
-								<>
-									<div
-										className="menu-item"
-										onClick={() => {
-											handleNewInstance(contextMenu.app!);
-											closeMenu();
-										}}
-									>
-										Open New Instance
-									</div>
-									<div className="menu-divider" />
-								</>
-							)}
 							<div className="menu-item" onClick={() => togglePin(contextMenu.app!)}>
 								{contextMenu.app.is_pinned ? "Unpin from Dock" : "Pin to Dock"}
 							</div>
@@ -1522,9 +1505,39 @@ const Dock = memo(function Dock() {
 									</div>
 								</div>
 							</div>
+							{(() => {
+								// App actions sit together just above Close, like the taskbar's
+								// jump list: the app's tray menus, then a new instance.
+								const app = contextMenu.app!;
+								const canOpenNew = app.is_running && app.path !== "start";
+								if (!app.tray_ids?.length && !canOpenNew) return null;
+								return (
+									<>
+										<div className="menu-divider" />
+										{app.tray_ids?.map((id, index, ids) => (
+											<div key={id} className="menu-item" onClick={() => void openTrayMenu(id)}>
+												{ids.length > 1 ? `Tray menu ${index + 1}` : "App tray menu"}
+											</div>
+										))}
+										{canOpenNew && (
+											<div
+												className="menu-item"
+												onClick={() => {
+													handleNewInstance(app);
+													closeMenu();
+												}}
+											>
+												Open New Instance
+											</div>
+										)}
+									</>
+								);
+							})()}
 							{contextMenu.app.is_running && !contextMenu.app.is_background && (
 								<>
-									<div className="menu-divider" />
+									{contextMenu.app.path === "start" && !contextMenu.app.tray_ids?.length && (
+										<div className="menu-divider" />
+									)}
 									<div
 										className="menu-item quit"
 										onClick={async () => {
