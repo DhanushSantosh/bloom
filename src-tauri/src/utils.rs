@@ -99,6 +99,10 @@ pub fn restore_taskbar_after_crash() {
 }
 
 pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
+    if !visible && crate::state::TRAY_INTERACTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return;
+    }
     unsafe {
         use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
         use windows::Win32::UI::WindowsAndMessaging::{

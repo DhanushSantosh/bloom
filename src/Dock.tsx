@@ -7,16 +7,7 @@ import { initTheme } from "./theme";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 
-interface AppInfo {
-	name: string;
-	path: string;
-	icon: string | null;
-	is_running: boolean;
-	is_pinned?: boolean;
-	hwnd?: number;
-	executable?: string;
-	all_hwnds?: [number, string][];
-}
+import { mergeTrayApps, type AppInfo, type TrayApp } from "./dockApps";
 
 // Host processes (Edge/Chrome/Brave/ApplicationFrameHost) run every PWA/UWP
 // window, so their window title must be part of their identity — otherwise two
@@ -109,11 +100,15 @@ const ITEM_ANIMATE = { opacity: 1, scale: 1 };
 const ITEM_EXIT = { opacity: 0, scale: 0 };
 
 // One dot per open window, capped at three.
-function WindowDots({ count }: { count: number }) {
+function WindowDots({ count, background }: { count: number; background?: boolean }) {
 	return (
-		<div className="window-dots">
-			{Array.from({ length: Math.min(Math.max(count, 1), 3) }, (_, i) => (
-				<div key={i} className="active-indicator" />
+		<div
+			className="window-dots"
+			role="img"
+			aria-label={background ? "Running in background" : `${count} open windows`}
+		>
+			{Array.from({ length: background ? 1 : Math.min(Math.max(count, 1), 3) }, (_, i) => (
+				<div key={i} className={`active-indicator${background ? " background-indicator" : ""}`} />
 			))}
 		</div>
 	);
@@ -388,7 +383,11 @@ const Dock = memo(function Dock() {
 		const poll = async () => {
 			if (isDragging) return;
 			const seq = ++pollSeq;
-			const running = await invoke<AppInfo[]>("get_active_windows");
+			const [windows, tray] = await Promise.all([
+				invoke<AppInfo[]>("get_active_windows"),
+				invoke<TrayApp[]>("get_tray_apps").catch(() => [])
+			]);
+			const running = mergeTrayApps(windows, tray);
 			// Ignore responses that arrive out of order: an older poll must never
 			// overwrite a newer state, which would resurrect closed apps.
 			if (seq !== pollSeq) return;
@@ -531,6 +530,8 @@ const Dock = memo(function Dock() {
 		try {
 			if (app.path === "start") {
 				await invoke("open_app", { appName: "start" });
+			} else if (app.is_background && app.tray_ids?.length === 1) {
+				await invoke("activate_tray_icon", { trayId: app.tray_ids[0] });
 			} else if (app.all_hwnds && app.all_hwnds.length > 1) {
 				// Several windows: bring the most recent forward, then cycle.
 				await invoke("focus_app_windows", { hwnds: app.all_hwnds.map(([hwnd]) => hwnd) });
@@ -541,6 +542,7 @@ const Dock = memo(function Dock() {
 			}
 		} catch (e) {
 			console.error(`Failed to interact with ${app.name}:`, e);
+			showActionError(e);
 		}
 	};
 
@@ -581,9 +583,30 @@ const Dock = memo(function Dock() {
 	const menuRef = useRef<HTMLDivElement>(null);
 	const popupRef = useRef<HTMLDivElement>(null);
 
+	const showActionError = (error: unknown) => {
+		if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+		setToast(typeof error === "string" ? error : "Could not complete this action.");
+		toastTimerRef.current = setTimeout(() => setToast(null), 5000);
+	};
+
+	const openTrayMenu = async (trayId: string) => {
+		closeMenu();
+		setPreviewData(null);
+		try {
+			await invoke("show_tray_context_menu", { trayId });
+		} catch (error) {
+			showActionError(error);
+		}
+	};
+
 	const handleContextMenu = (e: React.MouseEvent, app: AppInfo | null) => {
 		e.stopPropagation();
 		e.preventDefault();
+		// Shift-right-click keeps Bloom pin/customization controls available.
+		if (app?.is_background && app.tray_ids?.length === 1 && !e.shiftKey) {
+			void openTrayMenu(app.tray_ids[0]);
+			return;
+		}
 		setContextMenu({ x: e.clientX, y: e.clientY, app });
 	};
 
@@ -701,6 +724,13 @@ const Dock = memo(function Dock() {
 				}
 			}
 
+			// A background entry is an executable, while a pinned app may be
+			// an AppsFolder id. Reuse the add-app identity rules for this case.
+			const background = activeApps.find((app) => app.is_background && isSameApp(p, app));
+			if (background) {
+				matchedRunningKeys.add(itemKey(background));
+				return background;
+			}
 			return undefined;
 		};
 
@@ -717,7 +747,14 @@ const Dock = memo(function Dock() {
 			},
 			...pinnedApps.map((p) => {
 				const running = findRunningApp(p);
-				return { ...p, is_running: !!running, hwnd: running?.hwnd, all_hwnds: running?.all_hwnds };
+				return {
+					...p,
+					is_running: !!running,
+					hwnd: running?.hwnd,
+					all_hwnds: running?.all_hwnds,
+					tray_ids: running?.tray_ids,
+					is_background: running?.is_background
+				};
 			})
 		];
 
@@ -804,7 +841,7 @@ const Dock = memo(function Dock() {
 
 		if (hoveredApp && !isDragging) {
 			const app = dockItems.find((a) => itemKey(a) === hoveredApp);
-			if (app && app.is_running) {
+			if (app && app.is_running && !app.is_background) {
 				const hwndsToCapture = app.all_hwnds || (app.hwnd ? [[app.hwnd, app.name]] : []);
 
 				previewTimerRef.current = setTimeout(async () => {
@@ -1135,11 +1172,20 @@ const Dock = memo(function Dock() {
 														);
 													})()}
 												</motion.div>
-												{app.is_running && <WindowDots count={app.all_hwnds?.length ?? 1} />}
+												{app.is_running && (
+													<WindowDots
+														count={app.all_hwnds?.length ?? 1}
+														background={app.is_background}
+													/>
+												)}
 											</motion.div>
 										</Reorder.Item>
 									))}
 								</Reorder.Group>
+
+								{unpinnedItems.length > 0 && (pinnedItems.length > 0 || startItem) && (
+									<div className="dock-app-divider" role="separator" aria-orientation="vertical" />
+								)}
 
 								{unpinnedItems.map((app) => (
 									<motion.div
@@ -1277,7 +1323,12 @@ const Dock = memo(function Dock() {
 												);
 											})()}
 										</motion.div>
-										{app.is_running && <WindowDots count={app.all_hwnds?.length ?? 1} />}
+										{app.is_running && (
+											<WindowDots
+												count={app.all_hwnds?.length ?? 1}
+												background={app.is_background}
+											/>
+										)}
 									</motion.div>
 								))}
 							</motion.div>
@@ -1298,6 +1349,48 @@ const Dock = memo(function Dock() {
 					}}
 					onClick={(e) => e.stopPropagation()}
 				>
+					{(!contextMenu.app || contextMenu.app.path === "start") && (
+						<div
+							style={{
+								maxHeight: Math.max(64, window.innerHeight / scale - 200),
+								overflowY: "auto"
+							}}
+						>
+							{(contextMenu.app
+								? [
+										["installed-apps", "Installed Apps"],
+										["power-options", "Power Options"],
+										["device-manager", "Device Manager"],
+										["network-connections", "Network Connections"],
+										["disk-management", "Disk Management"],
+										["computer-management", "Computer Management"],
+										["task-manager", "Task Manager"],
+										["settings", "Settings"]
+									]
+								: [
+										["task-manager", "Task Manager"],
+										["taskbar-settings", "Taskbar Settings"]
+									]
+							).map(([action, label]) => (
+								<div
+									key={action}
+									className="menu-item"
+									onClick={() => {
+										closeMenu();
+										invoke("open_system_action", { action }).catch(showActionError);
+									}}
+								>
+									{label}
+								</div>
+							))}
+							<div className="menu-divider" />
+						</div>
+					)}
+					{contextMenu.app?.tray_ids?.map((id, index, ids) => (
+						<div key={id} className="menu-item" onClick={() => void openTrayMenu(id)}>
+							{ids.length > 1 ? `Tray menu ${index + 1}` : "App tray menu"}
+						</div>
+					))}
 					{contextMenu.app ? (
 						<>
 							{contextMenu.app.is_running && contextMenu.app.path !== "start" && (
@@ -1400,7 +1493,7 @@ const Dock = memo(function Dock() {
 									</div>
 								</div>
 							</div>
-							{contextMenu.app.is_running && (
+							{contextMenu.app.is_running && !contextMenu.app.is_background && (
 								<>
 									<div className="menu-divider" />
 									<div
@@ -1415,7 +1508,10 @@ const Dock = memo(function Dock() {
 											closeMenu();
 										}}
 									>
-										Quit {contextMenu.app.name}
+										Close{" "}
+										{contextMenu.app.all_hwnds && contextMenu.app.all_hwnds.length > 1
+											? "all windows"
+											: "window"}
 									</div>
 								</>
 							)}
