@@ -5,7 +5,8 @@ use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
 
 use crate::services::{
-    enum_windows_proc, register_dock_appbar, sync_overlays, unregister_appbar_native,
+    disable_dock_appbar, enum_windows_proc, register_dock_appbar, sync_overlays,
+    unregister_appbar_native,
 };
 use crate::state::*;
 use crate::types::{
@@ -79,8 +80,7 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     // The frontend already checks this, but settings.json may have a stale
     // value if the write didn't complete before restart. Reading here too
     // makes the dock reliably stay hidden regardless of frontend timing.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-    if enabled != "true" {
+    if !dock_enabled() {
         disable_dock(&app);
         return;
     }
@@ -102,9 +102,7 @@ pub async fn init_dock(app: AppHandle, mode: String) {
             let dock_clone = dock_win.clone();
             tauri::async_runtime::spawn(async move {
                 for attempt in 0..20 {
-                    if get_setting_str(dock_clone.app_handle(), "bloom-dock-enabled").as_deref()
-                        == Some("false")
-                    {
+                    if !dock_enabled() {
                         return;
                     }
                     // Wait for monitor and window dimensions to be available.
@@ -155,10 +153,7 @@ pub async fn init_dock(app: AppHandle, mode: String) {
                                 re_assert_topmost(hwnd);
                             }
                             // Ensure visible after positioning
-                            if get_setting_str(dock_clone.app_handle(), "bloom-dock-enabled")
-                                .as_deref()
-                                != Some("false")
-                            {
+                            if dock_enabled() {
                                 let _ = dock_clone.show();
                             }
                             break;
@@ -192,13 +187,7 @@ fn disable_dock(app: &AppHandle) {
     // during ShowWindow and would otherwise immediately hide it again.
     NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
     if let Some(dock_win) = app.get_webview_window("dock") {
-        let _ = dock_win.hide();
-        if let Ok(hwnd) = dock_win.hwnd() {
-            let hwnd_val = hwnd.0 as isize;
-            tauri::async_runtime::spawn_blocking(move || {
-                unregister_appbar_native(HWND(hwnd_val as *mut _));
-            });
-        }
+        disable_dock_appbar(dock_win);
     }
     DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
     set_taskbar_visibility(true, true);
@@ -224,9 +213,7 @@ pub async fn sync_appbar(app: AppHandle) {
     crate::services::reconcile_main_appbar(&app);
     if let Some(dock_win) = app.get_webview_window("dock") {
         // Skip dock re-registration if dock is disabled in settings.
-        let dock_enabled =
-            get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-        if dock_enabled == "true" && DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
+        if dock_enabled() && DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
             register_dock_appbar(dock_win);
         } else {
             if let Ok(hwnd) = dock_win.hwnd() {
@@ -241,8 +228,7 @@ pub async fn sync_appbar(app: AppHandle) {
 pub async fn change_dock_mode(app: AppHandle, mode: String) {
     // A disabled dock keeps the new mode in settings (init_dock applies it on
     // re-enable) but must not be shown or replace the native taskbar now.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-    if enabled != "true" {
+    if !dock_enabled() {
         return;
     }
     if let Some(dock_win) = app.get_webview_window("dock") {
@@ -2002,12 +1988,9 @@ pub fn open_notification_center() {
 }
 
 #[tauri::command]
-pub fn open_system_tray(app: AppHandle) {
+pub fn open_system_tray() {
     // The native taskbar is already available when the dock is disabled.
-    if get_setting_str(&app, "bloom-dock-enabled")
-        .as_deref()
-        .is_some_and(|value| value != "true")
-    {
+    if !dock_enabled() {
         return;
     }
     tauri::async_runtime::spawn_blocking(move || unsafe {
@@ -2019,10 +2002,7 @@ pub fn open_system_tray(app: AppHandle) {
             WS_EX_TRANSPARENT,
         };
 
-        if get_setting_str(&app, "bloom-dock-enabled")
-            .as_deref()
-            .is_some_and(|value| value != "true")
-        {
+        if !dock_enabled() {
             return;
         }
 
@@ -2200,10 +2180,7 @@ pub fn open_system_tray(app: AppHandle) {
                 }
 
                 // Once closed, hide the taskbar only if the dock is still enabled.
-                if get_setting_str(&app, "bloom-dock-enabled")
-                    .as_deref()
-                    .is_none_or(|value| value == "true")
-                {
+                if dock_enabled() {
                     crate::utils::set_taskbar_visibility(false, false);
                     crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
                 }

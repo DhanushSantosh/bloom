@@ -3311,9 +3311,24 @@ pub fn register_dock_appbar(window: tauri::WebviewWindow) {
     register_dock_appbar_inner(window, 0);
 }
 
+static DOCK_APPBAR_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_dock_appbar() -> std::sync::MutexGuard<'static, ()> {
+    DOCK_APPBAR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn disable_dock_appbar(window: tauri::WebviewWindow) {
+    let _guard = lock_dock_appbar();
+    let _ = window.hide();
+    if let Ok(hwnd) = window.hwnd() {
+        unregister_appbar_native(hwnd);
+    }
+    DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
+}
+
 fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
     // Registration retries may outlive a settings change that disabled the dock.
-    if get_setting_str(window.app_handle(), "bloom-dock-enabled").as_deref() == Some("false") {
+    if !crate::utils::dock_enabled() {
         return;
     }
     if let Ok(Some(monitor)) = window.app_handle().primary_monitor() {
@@ -3338,6 +3353,13 @@ fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
         }
 
         let pr = ((56.0 * bloom_scale) * scale) as i32;
+
+        // Serialize with disable_dock_appbar, then check the setting again.
+        // A pending registration must not outlive a dock-disable request.
+        let _guard = lock_dock_appbar();
+        if !crate::utils::dock_enabled() {
+            return;
+        }
 
         unsafe {
             use windows::Win32::Foundation::RECT;
@@ -3668,9 +3690,7 @@ fn reposition_all_windows(app_handle: &AppHandle) {
     // Only reposition the dock if it's enabled in settings.
     // Without this guard, power events (plug/unplug, wake) would re-show
     // a dock that the user had previously disabled.
-    let dock_enabled =
-        get_setting_str(app_handle, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-    if dock_enabled == "true" {
+    if crate::utils::dock_enabled() {
         if let Some(dock_win) = app_handle.get_webview_window("dock") {
             if DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
                 register_dock_appbar(dock_win);
@@ -3703,7 +3723,7 @@ fn reposition_autohide_dock(app_handle: &AppHandle, dock_win: tauri::WebviewWind
     tauri::async_runtime::spawn(async move {
         for _attempt in 0..5 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if get_setting_str(&ah, "bloom-dock-enabled").as_deref() == Some("false") {
+            if !crate::utils::dock_enabled() {
                 return;
             }
             let hwnd_val = match dock_clone.hwnd() {
@@ -3742,7 +3762,7 @@ fn reposition_autohide_dock(app_handle: &AppHandle, dock_win: tauri::WebviewWind
                 if let Ok(hwnd) = dock_clone.hwnd() {
                     re_assert_topmost(hwnd);
                 }
-                if get_setting_str(&ah, "bloom-dock-enabled").as_deref() != Some("false") {
+                if crate::utils::dock_enabled() {
                     let _ = dock_clone.show();
                 }
                 break;
