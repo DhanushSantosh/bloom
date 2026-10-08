@@ -2002,7 +2002,14 @@ pub fn open_notification_center() {
 }
 
 #[tauri::command]
-pub fn open_system_tray() {
+pub fn open_system_tray(app: AppHandle) {
+    // The native taskbar is already available when the dock is disabled.
+    if get_setting_str(&app, "bloom-dock-enabled")
+        .as_deref()
+        .is_some_and(|value| value != "true")
+    {
+        return;
+    }
     tauri::async_runtime::spawn_blocking(move || unsafe {
         use std::sync::atomic::Ordering;
         use windows::core::PCSTR;
@@ -2011,6 +2018,13 @@ pub fn open_system_tray() {
             SetWindowLongA, ShowWindow, GWL_EXSTYLE, LWA_ALPHA, SW_SHOW, WS_EX_LAYERED,
             WS_EX_TRANSPARENT,
         };
+
+        if get_setting_str(&app, "bloom-dock-enabled")
+            .as_deref()
+            .is_some_and(|value| value != "true")
+        {
+            return;
+        }
 
         let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
         let hwnd = FindWindowA(tray_class, windows::core::PCSTR::null()).unwrap_or_default();
@@ -2185,9 +2199,14 @@ pub fn open_system_tray() {
                     }
                 }
 
-                // Once closed, hide taskbar again
-                crate::utils::set_taskbar_visibility(false, false);
-                crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+                // Once closed, hide the taskbar only if the dock is still enabled.
+                if get_setting_str(&app, "bloom-dock-enabled")
+                    .as_deref()
+                    .is_none_or(|value| value == "true")
+                {
+                    crate::utils::set_taskbar_visibility(false, false);
+                    crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+                }
 
                 // Revert transparency
                 let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
