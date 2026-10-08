@@ -170,9 +170,6 @@ unsafe fn live_icons(windows: &[(isize, String)], include_own: bool) -> Vec<Icon
         let Some(path) = string(key.0, "ExecutablePath").and_then(|p| resolve_path(&p)) else {
             continue;
         };
-        if is_explorer_hosted_icon(&path) {
-            continue;
-        }
         if !include_own && own_path.as_deref() == Some(&path.to_lowercase()) {
             continue;
         }
@@ -224,7 +221,12 @@ pub fn enumerate() -> Vec<TrayApp> {
     unsafe {
         let windows = process_windows();
         let mut apps: HashMap<String, TrayApp> = HashMap::new();
-        for icon in live_icons(&windows, false) {
+        // Explorer-hosted system icons still occupy overflow positions, so
+        // live_icons keeps them for interact(); they just aren't app trays.
+        for icon in live_icons(&windows, false)
+            .into_iter()
+            .filter(|icon| !is_explorer_hosted_icon(&icon.path))
+        {
             let app = apps
                 .entry(icon.path.to_lowercase())
                 .or_insert_with(|| TrayApp {
@@ -552,6 +554,23 @@ unsafe fn find_overflow_icon(
         }
     }
     if buttons.len() != hidden.len() {
+        // Some overflow icons can't be attributed to a process Bloom can read,
+        // so positions don't line up. Fall back to the button whose label
+        // names the target app, but only when exactly one does and it names
+        // no other known icon; otherwise opening a menu could hit another app.
+        let labelled: Vec<_> = buttons
+            .iter()
+            .filter(|button| {
+                let label = button.CurrentName().unwrap_or_default().to_string();
+                matches_icon_label(&label, target)
+                    && !hidden
+                        .iter()
+                        .any(|icon| icon.key != target.key && matches_icon_label(&label, icon))
+            })
+            .collect();
+        if let [button] = labelled[..] {
+            return button.cast().map_err(|e| e.to_string());
+        }
         return Err("Windows tray icons changed while opening the menu. Please try again.".into());
     }
     // Name matches provide cross-checks of Explorer's ordered UI tree, but
