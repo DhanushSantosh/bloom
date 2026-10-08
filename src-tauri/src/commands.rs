@@ -524,12 +524,20 @@ pub async fn open_app(app: AppHandle, app_name: String) {
         return;
     }
 
-    if app_name == "bloom-settings" {
+    if is_bloom_launch_target(&app_name, &app.config().identifier) {
         open_settings_window(app);
         return;
     }
 
     tauri::async_runtime::spawn_blocking(move || launch_path(&app_name));
+}
+
+fn is_bloom_launch_target(target: &str, identifier: &str) -> bool {
+    target == "bloom-settings"
+        || target.eq_ignore_ascii_case(identifier)
+        || std::path::Path::new(target)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("bloom.exe"))
 }
 
 /// Launches another instance of an app instead of focusing an existing window.
@@ -3630,6 +3638,19 @@ pub fn setup_settings_watcher(app: AppHandle) {
 #[cfg(test)]
 mod pwa_icon_tests {
     use super::*;
+
+    #[test]
+    fn bloom_launch_targets_reuse_the_running_settings_window() {
+        let identifier = "com.sehaz.bloom";
+        assert!(is_bloom_launch_target(identifier, identifier));
+        assert!(is_bloom_launch_target("bloom-settings", identifier));
+        assert!(is_bloom_launch_target(
+            "C:\\Users\\test\\AppData\\Local\\bloom\\bloom.exe",
+            identifier
+        ));
+        assert!(!is_bloom_launch_target("C:\\Apps\\Discord.exe", identifier));
+        assert!(!is_bloom_launch_target("com.other.app", identifier));
+    }
 
     #[test]
     fn aumid_detection() {

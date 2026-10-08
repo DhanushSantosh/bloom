@@ -5,8 +5,9 @@ observed that app with a window during the current session and it still has a
 live notification icon. Other tray-only apps do not fill the dock. Pinned apps
 show a grey dot from startup when they are already active in the tray. Windowed
 apps retain their normal window dots and previews.
-Running unpinned apps appear to the right of the pinned group, separated by a
-thin theme-aware divider whenever both groups are present.
+Running unpinned apps appear to the right of the pinned group. Settings > Dock >
+App Separator controls the thin theme-aware divider; it is on by default and
+appears only when an unpinned app is present.
 
 - Click a background app to invoke its notification icon's default action.
 - Right-click a background app to request its native tray context menu.
@@ -21,9 +22,12 @@ thin theme-aware divider whenever both groups are present.
 `tray.rs` reads notification-icon candidates from Windows 11's
 `HKCU\Control Panel\NotifyIconSettings`. Each candidate must match a running
 process path and pass `Shell_NotifyIconGetRect`; historical entries alone never
-count as running. The frontend reconciles tray owners with actual window handles,
+count as running. Explorer-hosted system icons (including Bluetooth) are excluded
+because their process path is shared with File Explorer windows. The frontend reconciles tray owners with actual window handles,
 including applications launched through shell IDs. A shared browser tray does
-not combine multiple PWAs.
+not combine multiple PWAs. Pinned shell IDs also match visible app windows when
+their executable paths differ, so opening Bloom's Settings window does not add
+an unpinned duplicate of a pinned Bloom app.
 
 Native interactions use UI Automation. Windows reports the chevron rectangle for
 an icon hidden in the overflow, so hidden icons are matched by the live
@@ -80,6 +84,9 @@ Manual acceptance checks (required before merging):
    the taskbar must return to the intended state with no transparent residue.
 9. Check Start and dock system actions, including denied UAC and launch errors.
 10. Check light/dark themes, large Bloom scale, multiple monitors and mixed DPI.
+11. Toggle App Separator off and on: only the divider changes; unpinned apps stay
+    on the right. Open pinned Bloom and check that Settings appears without a
+    second unpinned Bloom icon. File Explorer must not show Bluetooth tray actions.
 
 Live discovery, the Discord background dot, and Discord's native context menu
 have been exercised on the development machine. The broader compatibility,

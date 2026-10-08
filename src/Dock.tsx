@@ -134,6 +134,9 @@ const Dock = memo(function Dock() {
 	const [dockIconOnly, setDockIconOnly] = useState(
 		() => localStorage.getItem("bloom-dock-icon-only") === "true"
 	);
+	const [dockSeparatorEnabled, setDockSeparatorEnabled] = useState(
+		() => localStorage.getItem("bloom-dock-separator-enabled") !== "false"
+	);
 	const [dockAdaptive, setDockAdaptive] = useState(
 		() => localStorage.getItem("bloom-dock-adaptive") === "true"
 	);
@@ -320,6 +323,9 @@ const Dock = memo(function Dock() {
 			const iconOnly = getVal("bloom-dock-icon-only", "false");
 			setDockIconOnly(iconOnly === "true");
 
+			const separator = getVal("bloom-dock-separator-enabled", "true");
+			setDockSeparatorEnabled(separator === "true");
+
 			const adaptive = getVal("bloom-dock-adaptive", "false");
 			setDockAdaptive(adaptive === "true");
 
@@ -373,6 +379,7 @@ const Dock = memo(function Dock() {
 		"bloom-dock-mode": setDockMode,
 		"bloom-dock-preview-enabled": setDockPreviewEnabled,
 		"bloom-dock-icon-only": setDockIconOnly,
+		"bloom-dock-separator-enabled": setDockSeparatorEnabled,
 		"bloom-dock-adaptive": setDockAdaptive,
 		"bloom-start-icon": setStartIcon,
 		"bloom-scale": setScale
@@ -743,12 +750,15 @@ const Dock = memo(function Dock() {
 				}
 			}
 
-			// A background entry is an executable, while a pinned app may be
-			// an AppsFolder id. Reuse the add-app identity rules for this case.
-			const background = activeApps.find((app) => app.is_background && isSameApp(p, app));
-			if (background) {
-				matchedRunningKeys.add(itemKey(background));
-				return background;
+			// A pinned shell id and a visible window can have different paths
+			// (for example com.sehaz.bloom and bloom.exe). Match both visible
+			// and background apps so the window cannot become a second dock item.
+			const equivalent = activeApps.find(
+				(app) => !matchedRunningKeys.has(itemKey(app)) && isSameApp(p, app)
+			);
+			if (equivalent) {
+				matchedRunningKeys.add(itemKey(equivalent));
+				return equivalent;
 			}
 			return undefined;
 		};
@@ -1202,7 +1212,7 @@ const Dock = memo(function Dock() {
 									))}
 								</Reorder.Group>
 
-								{unpinnedItems.length > 0 && (pinnedItems.length > 0 || startItem) && (
+								{dockSeparatorEnabled && unpinnedItems.length > 0 && (pinnedItems.length > 0 || startItem) && (
 									<div className="dock-app-divider" role="separator" aria-orientation="vertical" />
 								)}
 

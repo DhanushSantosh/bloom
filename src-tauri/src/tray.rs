@@ -106,6 +106,14 @@ struct Icon {
     promoted: bool,
 }
 
+// Explorer owns system notification icons such as Bluetooth. They share
+// explorer.exe with File Explorer windows but are not File Explorer app actions.
+fn is_explorer_hosted_icon(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("explorer.exe"))
+}
+
 unsafe extern "system" fn collect_window(hwnd: HWND, param: LPARAM) -> windows::core::BOOL {
     let windows = &mut *(param.0 as *mut Vec<(isize, String)>);
     let mut pid = 0;
@@ -162,6 +170,9 @@ unsafe fn live_icons(windows: &[(isize, String)], include_own: bool) -> Vec<Icon
         let Some(path) = string(key.0, "ExecutablePath").and_then(|p| resolve_path(&p)) else {
             continue;
         };
+        if is_explorer_hosted_icon(&path) {
+            continue;
+        }
         if !include_own && own_path.as_deref() == Some(&path.to_lowercase()) {
             continue;
         }
@@ -692,5 +703,15 @@ mod tests {
     fn accepts_braced_guid_and_rejects_bad_identity() {
         assert!(parse_guid("{699E423D-73DA-42BA-B94E-881FF8672467}").is_some());
         assert!(parse_guid("not-an-icon").is_none());
+    }
+
+    #[test]
+    fn explorer_hosted_system_icons_are_not_app_trays() {
+        assert!(is_explorer_hosted_icon("C:\\Windows\\explorer.exe"));
+        assert!(is_explorer_hosted_icon("C:\\WINDOWS\\EXPLORER.EXE"));
+        assert!(!is_explorer_hosted_icon(
+            "C:\\Windows\\System32\\SecurityHealthSystray.exe"
+        ));
+        assert!(!is_explorer_hosted_icon("C:\\Apps\\Discord.exe"));
     }
 }
