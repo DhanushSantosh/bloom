@@ -3,6 +3,7 @@
 mod commands;
 mod services;
 mod state;
+mod tray;
 mod types;
 mod updater;
 mod utils;
@@ -120,6 +121,10 @@ fn main() {
             set_notch_hovered,
             set_notch_visible,
             get_active_windows,
+            get_tray_apps,
+            show_tray_context_menu,
+            activate_tray_icon,
+            open_system_action,
             get_app_icon,
             get_installed_apps,
             save_pinned_apps,

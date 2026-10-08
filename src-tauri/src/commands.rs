@@ -524,12 +524,20 @@ pub async fn open_app(app: AppHandle, app_name: String) {
         return;
     }
 
-    if app_name == "bloom-settings" {
+    if is_bloom_launch_target(&app_name, &app.config().identifier) {
         open_settings_window(app);
         return;
     }
 
     tauri::async_runtime::spawn_blocking(move || launch_path(&app_name));
+}
+
+fn is_bloom_launch_target(target: &str, identifier: &str) -> bool {
+    target == "bloom-settings"
+        || target.eq_ignore_ascii_case(identifier)
+        || std::path::Path::new(target)
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("bloom.exe"))
 }
 
 /// Launches another instance of an app instead of focusing an existing window.
@@ -2361,7 +2369,7 @@ pub fn set_volume(volume: f32) {
 }
 
 /// Full path of a running process, or `None` when it can't be opened.
-unsafe fn process_image_path(pid: u32) -> Option<String> {
+pub(crate) unsafe fn process_image_path(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -2385,7 +2393,7 @@ unsafe fn process_image_path(pid: u32) -> Option<String> {
 /// Friendly name for an executable: the shell's `FileDescription` from version
 /// info ("Google Chrome"), falling back to the prettified file stem. Results are
 /// cached by path because the mixer polls while it is open.
-unsafe fn friendly_process_name(path: &str) -> String {
+pub(crate) unsafe fn friendly_process_name(path: &str) -> String {
     let cache = PROCESS_NAME_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
         if let Some(name) = guard.get(path) {
@@ -3632,6 +3640,19 @@ mod pwa_icon_tests {
     use super::*;
 
     #[test]
+    fn bloom_launch_targets_reuse_the_running_settings_window() {
+        let identifier = "com.sehaz.bloom";
+        assert!(is_bloom_launch_target(identifier, identifier));
+        assert!(is_bloom_launch_target("bloom-settings", identifier));
+        assert!(is_bloom_launch_target(
+            "C:\\Users\\test\\AppData\\Local\\bloom\\bloom.exe",
+            identifier
+        ));
+        assert!(!is_bloom_launch_target("C:\\Apps\\Discord.exe", identifier));
+        assert!(!is_bloom_launch_target("com.other.app", identifier));
+    }
+
+    #[test]
     fn aumid_detection() {
         assert!(is_aumid_path("4DF9E0F8.Netflix_mcm4njqhnhss8!Netflix.App"));
         assert!(is_aumid_path("Microsoft.VisualStudioCode"));
@@ -3815,4 +3836,91 @@ mod pwa_icon_tests {
             Some("C:\\Start Menu\\Netflix.lnk".into())
         );
     }
+}
+
+#[tauri::command]
+pub async fn get_tray_apps() -> Vec<crate::tray::TrayApp> {
+    tauri::async_runtime::spawn_blocking(crate::tray::enumerate)
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn show_tray_context_menu(tray_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::tray::interact(&tray_id, true))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SystemAction {
+    TaskManager,
+    DiskManagement,
+    DeviceManager,
+    ComputerManagement,
+    Settings,
+    TaskbarSettings,
+    InstalledApps,
+    PowerOptions,
+    NetworkConnections,
+}
+
+#[tauri::command]
+pub async fn open_system_action(action: SystemAction) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let mut directory = [0u16; 32768];
+        let length =
+            windows::Win32::System::SystemInformation::GetSystemDirectoryW(Some(&mut directory));
+        if length == 0 || length as usize >= directory.len() {
+            return Err("Windows system directory is unavailable.".into());
+        }
+        let system = String::from_utf16_lossy(&directory[..length as usize]);
+        let (file, args) = match action {
+            SystemAction::TaskManager => (format!("{system}\\Taskmgr.exe"), String::new()),
+            SystemAction::DiskManagement => (
+                format!("{system}\\mmc.exe"),
+                format!("\"{system}\\diskmgmt.msc\""),
+            ),
+            SystemAction::DeviceManager => (
+                format!("{system}\\mmc.exe"),
+                format!("\"{system}\\devmgmt.msc\""),
+            ),
+            SystemAction::ComputerManagement => (
+                format!("{system}\\mmc.exe"),
+                format!("\"{system}\\compmgmt.msc\""),
+            ),
+            SystemAction::Settings => ("ms-settings:".into(), String::new()),
+            SystemAction::TaskbarSettings => ("ms-settings:taskbar".into(), String::new()),
+            SystemAction::InstalledApps => ("ms-settings:appsfeatures".into(), String::new()),
+            SystemAction::PowerOptions => ("ms-settings:powersleep".into(), String::new()),
+            SystemAction::NetworkConnections => ("ms-settings:network".into(), String::new()),
+        };
+        let file: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
+        let args: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+        let result = ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            windows::core::PCWSTR(file.as_ptr()),
+            windows::core::PCWSTR(args.as_ptr()),
+            windows::core::PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        if result.0 as usize <= 32 {
+            Err("Windows could not open this system tool.".into())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn activate_tray_icon(tray_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::tray::interact(&tray_id, false))
+        .await
+        .map_err(|e| e.to_string())?
 }
