@@ -7,7 +7,7 @@ import { initTheme } from "./theme";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 
-import { mergeTrayApps, type AppInfo, type TrayApp } from "./dockApps";
+import { mergeTrayApps, selectDockTrayApps, type AppInfo, type TrayApp } from "./dockApps";
 
 // Host processes (Edge/Chrome/Brave/ApplicationFrameHost) run every PWA/UWP
 // window, so their window title must be part of their identity — otherwise two
@@ -157,6 +157,7 @@ const Dock = memo(function Dock() {
 	} | null>(null);
 	const [activeSubmenu, setActiveSubmenu] = useState<string | null>(null);
 	const [activeOrder, setActiveOrder] = useState<string[]>([]);
+	const observedTrayPathsRef = useRef(new Set<string>());
 	const [isDragging, setIsDragging] = useState(false);
 	const [hoveredApp, setHoveredApp] = useState<string | null>(null);
 	const [pressedApp, setPressedApp] = useState<string | null>(null);
@@ -379,6 +380,7 @@ const Dock = memo(function Dock() {
 
 	useEffect(() => {
 		let pollSeq = 0;
+		let stopped = false;
 
 		const poll = async () => {
 			if (isDragging) return;
@@ -387,10 +389,26 @@ const Dock = memo(function Dock() {
 				invoke<AppInfo[]>("get_active_windows"),
 				invoke<TrayApp[]>("get_tray_apps").catch(() => [])
 			]);
-			const running = mergeTrayApps(windows, tray);
 			// Ignore responses that arrive out of order: an older poll must never
 			// overwrite a newer state, which would resurrect closed apps.
-			if (seq !== pollSeq) return;
+			if (stopped || seq !== pollSeq) return;
+			const selected = selectDockTrayApps(
+				windows,
+				tray,
+				observedTrayPathsRef.current,
+				(app) =>
+					pinnedApps.some((pinned) =>
+						isSameApp(pinned, {
+							name: app.name,
+							path: app.path,
+							icon: null,
+							is_running: true,
+							executable: fileOf(app.path)
+						})
+					)
+			);
+			observedTrayPathsRef.current = selected.observed;
+			const running = mergeTrayApps(windows, selected.visible);
 			setActiveApps(running);
 
 			setActiveOrder((prev) => {
@@ -413,10 +431,11 @@ const Dock = memo(function Dock() {
 		const interval = setInterval(poll, 10000);
 
 		return () => {
+			stopped = true;
 			clearInterval(interval);
 			unlistenWindowChange.then((f) => f());
 		};
-	}, [isDragging]);
+	}, [isDragging, pinnedApps]);
 
 	const fetchIcon = async (path: string, name?: string, hwnd?: number, retryCount = 0) => {
 		const isHost = isBrowserHost(path);

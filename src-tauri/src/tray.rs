@@ -475,8 +475,8 @@ fn normalized_label(label: &str) -> String {
         .collect()
 }
 
-unsafe fn matches_icon_label(button: &IUIAutomationElement, target: &Icon) -> bool {
-    let name = normalized_label(&button.CurrentName().unwrap_or_default().to_string());
+unsafe fn matches_icon_label(label: &str, target: &Icon) -> bool {
+    let name = normalized_label(label);
     let friendly = normalized_label(&crate::commands::friendly_process_name(&target.path));
     let stem = std::path::Path::new(&target.path)
         .file_stem()
@@ -488,8 +488,10 @@ unsafe fn matches_icon_label(button: &IUIAutomationElement, target: &Icon) -> bo
 
 /// Shell_NotifyIconGetRect points at the chevron for hidden icons. The live
 /// registry order and the overflow's UI Automation button order coincide;
-/// require equal counts and corroborate the target's accessible label before
-/// triggering an app action.
+/// require equal counts and reject any contradictory name matches. An icon's
+/// tooltip is app-defined and often differs from its executable description
+/// (for example PhoneExperienceHost.exe displays "Phone Link - Disconnected"),
+/// so a missing name match is not by itself an identity failure.
 unsafe fn find_overflow_icon(
     automation: &IUIAutomation,
     icons: &[Icon],
@@ -541,11 +543,24 @@ unsafe fn find_overflow_icon(
     if buttons.len() != hidden.len() {
         return Err("Windows tray icons changed while opening the menu. Please try again.".into());
     }
-    let button = buttons.remove(position);
-    if !matches_icon_label(&button, target) {
-        return Err("Windows could not verify this app's tray icon.".into());
+    // Name matches provide cross-checks of Explorer's ordered UI tree, but
+    // cannot be required for every icon because tooltip text is app-defined.
+    for (button_index, button) in buttons.iter().enumerate() {
+        let label = button.CurrentName().unwrap_or_default().to_string();
+        if label.trim().is_empty() {
+            return Err("Windows returned an unnamed tray icon. Please try again.".into());
+        }
+        let matches: Vec<_> = hidden
+            .iter()
+            .enumerate()
+            .filter(|(_, icon)| matches_icon_label(&label, icon))
+            .map(|(index, _)| index)
+            .collect();
+        if matches.len() == 1 && matches[0] != button_index {
+            return Err("Windows tray icon order changed. Please try again.".into());
+        }
     }
-    button.cast().map_err(|e| e.to_string())
+    buttons.remove(position).cast().map_err(|e| e.to_string())
 }
 
 unsafe fn find_promoted_icon(
@@ -606,8 +621,14 @@ unsafe fn find_promoted_icon(
         return Err("Windows could not identify this app's tray icon.".into());
     }
     let button = matches.remove(0);
-    if !matches_icon_label(&button, target) {
-        return Err("Windows could not verify this app's tray icon.".into());
+    if button
+        .CurrentName()
+        .unwrap_or_default()
+        .to_string()
+        .trim()
+        .is_empty()
+    {
+        return Err("Windows returned an unnamed tray icon. Please try again.".into());
     }
     button.cast().map_err(|e| e.to_string())
 }

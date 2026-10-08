@@ -1,8 +1,10 @@
 # Dock background apps and system actions
 
-An app with a live notification icon remains in the dock after its last window
-closes. One grey dot indicates background activity. Windowed apps retain their
-normal window dots and previews. Pinned entries receive the same live state.
+An unpinned app remains in the dock after its last window closes only if Bloom
+observed that app with a window during the current session and it still has a
+live notification icon. Other tray-only apps do not fill the dock. Pinned apps
+show a grey dot from startup when they are already active in the tray. Windowed
+apps retain their normal window dots and previews.
 Running unpinned apps appear to the right of the pinned group, separated by a
 thin theme-aware divider whenever both groups are present.
 
@@ -26,7 +28,10 @@ not combine multiple PWAs.
 Native interactions use UI Automation. Windows reports the chevron rectangle for
 an icon hidden in the overflow, so hidden icons are matched by the live
 `UIOrderList` order against Explorer's overflow buttons, with equal-count and
-accessible-label checks before invocation. Promoted icons are matched to the
+nonempty-label checks. Any label that uniquely identifies another icon must
+also agree with that order. App-defined tooltip text may differ from the
+executable description, so it cannot be required to contain the process name.
+Promoted icons are matched to the
 taskbar's XAML controls by screen position, accounting for display scaling.
 Failure produces a user-visible error. Menu opening temporarily exposes the
 native tray and restores the taskbar on completion or error, without changing
@@ -60,17 +65,21 @@ cargo test --locked live_tray_discovery -- --ignored --nocapture
 
 Manual acceptance checks (required before merging):
 
-1. Start Discord with one window: one normal dot, no duplicate pinned entry.
-2. Close Discord to the tray: one grey dot, no window thumbnail.
-3. Right-click its dock icon: Discord's own menu appears and its actions work.
-4. Click the background icon: Discord responds through its tray default action.
-5. Quit Discord through its native menu: unpinned icon disappears; pinned dot clears
+1. On Bloom startup, unrelated tray-only apps stay out of the dock; pinned apps
+   already active in the tray show a grey dot.
+2. Start an unpinned Discord with one window: one normal dot, no duplicate entry.
+3. Close Discord to the tray: one grey dot, no window thumbnail.
+4. Right-click its dock icon: Discord's own menu appears and its actions work.
+5. Click the background icon: Discord responds through its tray default action.
+6. Quit Discord through its native menu: unpinned icon disappears; pinned dot clears
    within the 10-second safety poll.
-6. Repeat with an icon in overflow, a promoted icon, and an app with multiple icons.
-7. Exit/restart Explorer, exit Bloom during menu opening, and toggle the dock off:
+7. Repeat with an icon in overflow, a promoted icon, and an app with multiple icons.
+   Include apps whose tooltips differ from their executable names, such as
+   Tailscale, Phone Link, and Windows Security.
+8. Exit/restart Explorer, exit Bloom during menu opening, and toggle the dock off:
    the taskbar must return to the intended state with no transparent residue.
-8. Check Start and dock system actions, including denied UAC and launch errors.
-9. Check light/dark themes, large Bloom scale, multiple monitors and mixed DPI.
+9. Check Start and dock system actions, including denied UAC and launch errors.
+10. Check light/dark themes, large Bloom scale, multiple monitors and mixed DPI.
 
 Live discovery, the Discord background dot, and Discord's native context menu
 have been exercised on the development machine. The broader compatibility,
