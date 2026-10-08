@@ -99,6 +99,21 @@ pub fn restore_taskbar_after_crash() {
 }
 
 pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
+    // Delayed AppBar and tray callbacks cannot hide Windows' taskbar after the
+    // dock has been disabled.
+    if !visible {
+        if let Some(cache) = crate::state::SETTINGS_CACHE.get() {
+            if let Ok(cache) = cache.lock() {
+                if cache
+                    .get("bloom-dock-enabled")
+                    .and_then(|value| value.as_str())
+                    == Some("false")
+                {
+                    return;
+                }
+            }
+        }
+    }
     unsafe {
         use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
         use windows::Win32::UI::WindowsAndMessaging::{

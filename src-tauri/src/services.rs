@@ -3312,6 +3312,10 @@ pub fn register_dock_appbar(window: tauri::WebviewWindow) {
 }
 
 fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
+    // Registration retries may outlive a settings change that disabled the dock.
+    if get_setting_str(window.app_handle(), "bloom-dock-enabled").as_deref() == Some("false") {
+        return;
+    }
     if let Ok(Some(monitor)) = window.app_handle().primary_monitor() {
         let m_size = monitor.size();
         let m_pos = monitor.position();
@@ -3699,6 +3703,9 @@ fn reposition_autohide_dock(app_handle: &AppHandle, dock_win: tauri::WebviewWind
     tauri::async_runtime::spawn(async move {
         for _attempt in 0..5 {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if get_setting_str(&ah, "bloom-dock-enabled").as_deref() == Some("false") {
+                return;
+            }
             let hwnd_val = match dock_clone.hwnd() {
                 Ok(h) => h.0 as isize,
                 Err(_) => continue,
@@ -3735,7 +3742,9 @@ fn reposition_autohide_dock(app_handle: &AppHandle, dock_win: tauri::WebviewWind
                 if let Ok(hwnd) = dock_clone.hwnd() {
                     re_assert_topmost(hwnd);
                 }
-                let _ = dock_clone.show();
+                if get_setting_str(&ah, "bloom-dock-enabled").as_deref() != Some("false") {
+                    let _ = dock_clone.show();
+                }
                 break;
             }
         }

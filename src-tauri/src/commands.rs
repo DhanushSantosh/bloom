@@ -81,10 +81,7 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     // makes the dock reliably stay hidden regardless of frontend timing.
     let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
     if enabled != "true" {
-        if let Some(dock_win) = app.get_webview_window("dock") {
-            let _ = dock_win.hide();
-            DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
-        }
+        disable_dock(&app);
         return;
     }
 
@@ -105,6 +102,11 @@ pub async fn init_dock(app: AppHandle, mode: String) {
             let dock_clone = dock_win.clone();
             tauri::async_runtime::spawn(async move {
                 for attempt in 0..20 {
+                    if get_setting_str(dock_clone.app_handle(), "bloom-dock-enabled").as_deref()
+                        == Some("false")
+                    {
+                        return;
+                    }
                     // Wait for monitor and window dimensions to be available.
                     // Never use a hardcoded fallback — wrong values produce off-screen placement.
                     // Extract HWND as isize before any await (raw pointer is not Send).
@@ -153,7 +155,12 @@ pub async fn init_dock(app: AppHandle, mode: String) {
                                 re_assert_topmost(hwnd);
                             }
                             // Ensure visible after positioning
-                            let _ = dock_clone.show();
+                            if get_setting_str(dock_clone.app_handle(), "bloom-dock-enabled")
+                                .as_deref()
+                                != Some("false")
+                            {
+                                let _ = dock_clone.show();
+                            }
                             break;
                         }
                     }
@@ -180,29 +187,33 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     }
 }
 
+fn disable_dock(app: &AppHandle) {
+    // Clear this before showing the native taskbar: the WinEvent hook can run
+    // during ShowWindow and would otherwise immediately hide it again.
+    NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    if let Some(dock_win) = app.get_webview_window("dock") {
+        let _ = dock_win.hide();
+        if let Ok(hwnd) = dock_win.hwnd() {
+            let hwnd_val = hwnd.0 as isize;
+            tauri::async_runtime::spawn_blocking(move || {
+                unregister_appbar_native(HWND(hwnd_val as *mut _));
+            });
+        }
+    }
+    DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
+    set_taskbar_visibility(true, true);
+    crate::services::reconcile_main_appbar(app);
+}
+
 #[tauri::command]
 pub async fn toggle_dock(app: AppHandle, enable: bool) {
-    if let Some(dock_win) = app.get_webview_window("dock") {
-        if enable {
-            // Load the saved dock mode; "smart" is the fresh-install default.
-            let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
-                .unwrap_or_else(|| "smart".to_string());
-            init_dock(app, saved_mode).await;
-        } else {
-            let _ = dock_win.hide();
-            if let Ok(hwnd) = dock_win.hwnd() {
-                let hwnd_val = hwnd.0 as isize;
-                tauri::async_runtime::spawn_blocking(move || {
-                    unregister_appbar_native(HWND(hwnd_val as *mut _));
-                });
-            }
-            DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
-            set_taskbar_visibility(true, true);
-            NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
-
-            // Re-sync other appbars
-            crate::services::reconcile_main_appbar(&app);
-        }
+    if enable {
+        // Load the saved dock mode; "smart" is the fresh-install default.
+        let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
+            .unwrap_or_else(|| "smart".to_string());
+        init_dock(app, saved_mode).await;
+    } else {
+        disable_dock(&app);
     }
 }
 
