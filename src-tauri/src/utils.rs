@@ -100,8 +100,11 @@ pub fn restore_taskbar_after_crash() {
 
 pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     // Delayed AppBar and tray callbacks cannot hide Windows' taskbar after the
-    // dock has been disabled.
-    if !visible && !dock_enabled() {
+    // dock has been disabled or while its tray is in use.
+    if !visible
+        && (!dock_enabled()
+            || crate::state::TRAY_INTERACTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed))
+    {
         return;
     }
     unsafe {
