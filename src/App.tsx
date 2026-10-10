@@ -879,6 +879,8 @@ function App() {
 						const dockEnabled = getVal("bloom-dock-enabled", "true") === "true";
 						if (dockEnabled) {
 							await invoke("init_dock", { mode: dockMode });
+						} else {
+							await invoke("toggle_dock", { enable: false });
 						}
 						await invoke("change_notch_mode", { mode: nMode });
 						await invoke("sync_appbar");
