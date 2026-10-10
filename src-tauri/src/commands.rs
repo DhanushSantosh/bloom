@@ -5,7 +5,8 @@ use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
 
 use crate::services::{
-    enum_windows_proc, register_dock_appbar, sync_overlays, unregister_appbar_native,
+    disable_dock_appbar, enum_windows_proc, register_dock_appbar, sync_overlays,
+    unregister_appbar_native,
 };
 use crate::state::*;
 use crate::types::{
@@ -79,12 +80,8 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     // The frontend already checks this, but settings.json may have a stale
     // value if the write didn't complete before restart. Reading here too
     // makes the dock reliably stay hidden regardless of frontend timing.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-    if enabled != "true" {
-        if let Some(dock_win) = app.get_webview_window("dock") {
-            let _ = dock_win.hide();
-            DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
-        }
+    if !dock_enabled() {
+        disable_dock(&app);
         return;
     }
 
@@ -105,6 +102,9 @@ pub async fn init_dock(app: AppHandle, mode: String) {
             let dock_clone = dock_win.clone();
             tauri::async_runtime::spawn(async move {
                 for attempt in 0..20 {
+                    if !dock_enabled() {
+                        return;
+                    }
                     // Wait for monitor and window dimensions to be available.
                     // Never use a hardcoded fallback — wrong values produce off-screen placement.
                     // Extract HWND as isize before any await (raw pointer is not Send).
@@ -153,7 +153,9 @@ pub async fn init_dock(app: AppHandle, mode: String) {
                                 re_assert_topmost(hwnd);
                             }
                             // Ensure visible after positioning
-                            let _ = dock_clone.show();
+                            if dock_enabled() {
+                                let _ = dock_clone.show();
+                            }
                             break;
                         }
                     }
@@ -180,29 +182,27 @@ pub async fn init_dock(app: AppHandle, mode: String) {
     }
 }
 
+fn disable_dock(app: &AppHandle) {
+    // Clear this before showing the native taskbar: the WinEvent hook can run
+    // during ShowWindow and would otherwise immediately hide it again.
+    NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    if let Some(dock_win) = app.get_webview_window("dock") {
+        disable_dock_appbar(dock_win);
+    }
+    DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
+    set_taskbar_visibility(true, true);
+    crate::services::reconcile_main_appbar(app);
+}
+
 #[tauri::command]
 pub async fn toggle_dock(app: AppHandle, enable: bool) {
-    if let Some(dock_win) = app.get_webview_window("dock") {
-        if enable {
-            // Load the saved dock mode; "smart" is the fresh-install default.
-            let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
-                .unwrap_or_else(|| "smart".to_string());
-            init_dock(app, saved_mode).await;
-        } else {
-            let _ = dock_win.hide();
-            if let Ok(hwnd) = dock_win.hwnd() {
-                let hwnd_val = hwnd.0 as isize;
-                tauri::async_runtime::spawn_blocking(move || {
-                    unregister_appbar_native(HWND(hwnd_val as *mut _));
-                });
-            }
-            DOCK_APPBAR_REGISTERED.store(false, Ordering::Relaxed);
-            set_taskbar_visibility(true, true);
-            NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
-
-            // Re-sync other appbars
-            crate::services::reconcile_main_appbar(&app);
-        }
+    if enable {
+        // Load the saved dock mode; "smart" is the fresh-install default.
+        let saved_mode = crate::utils::get_setting_str(&app, "bloom-dock-mode")
+            .unwrap_or_else(|| "smart".to_string());
+        init_dock(app, saved_mode).await;
+    } else {
+        disable_dock(&app);
     }
 }
 
@@ -213,9 +213,7 @@ pub async fn sync_appbar(app: AppHandle) {
     crate::services::reconcile_main_appbar(&app);
     if let Some(dock_win) = app.get_webview_window("dock") {
         // Skip dock re-registration if dock is disabled in settings.
-        let dock_enabled =
-            get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-        if dock_enabled == "true" && DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
+        if dock_enabled() && DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
             register_dock_appbar(dock_win);
         } else {
             if let Ok(hwnd) = dock_win.hwnd() {
@@ -230,8 +228,7 @@ pub async fn sync_appbar(app: AppHandle) {
 pub async fn change_dock_mode(app: AppHandle, mode: String) {
     // A disabled dock keeps the new mode in settings (init_dock applies it on
     // re-enable) but must not be shown or replace the native taskbar now.
-    let enabled = get_setting_str(&app, "bloom-dock-enabled").unwrap_or_else(|| "true".to_string());
-    if enabled != "true" {
+    if !dock_enabled() {
         return;
     }
     if let Some(dock_win) = app.get_webview_window("dock") {
@@ -2000,6 +1997,10 @@ pub fn open_notification_center() {
 
 #[tauri::command]
 pub fn open_system_tray() {
+    // The native taskbar is already available when the dock is disabled.
+    if !dock_enabled() {
+        return;
+    }
     tauri::async_runtime::spawn_blocking(move || unsafe {
         use std::sync::atomic::Ordering;
         use windows::core::PCSTR;
@@ -2008,6 +2009,10 @@ pub fn open_system_tray() {
             SetWindowLongA, ShowWindow, GWL_EXSTYLE, LWA_ALPHA, SW_SHOW, WS_EX_LAYERED,
             WS_EX_TRANSPARENT,
         };
+
+        if !dock_enabled() {
+            return;
+        }
 
         let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
         let hwnd = FindWindowA(tray_class, windows::core::PCSTR::null()).unwrap_or_default();
@@ -2182,9 +2187,11 @@ pub fn open_system_tray() {
                     }
                 }
 
-                // Once closed, hide taskbar again
-                crate::utils::set_taskbar_visibility(false, false);
-                crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+                // Once closed, hide the taskbar only if the dock is still enabled.
+                if dock_enabled() {
+                    crate::utils::set_taskbar_visibility(false, false);
+                    crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+                }
 
                 // Revert transparency
                 let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
@@ -3012,8 +3019,7 @@ fn is_wlan_connected_sync() -> bool {
         if let Some(list) = interface_list.as_ref() {
             let count = list.dwNumberOfItems as usize;
             if count > 0 && count <= 64 {
-                let interfaces =
-                    std::slice::from_raw_parts(list.InterfaceInfo.as_ptr(), count);
+                let interfaces = std::slice::from_raw_parts(list.InterfaceInfo.as_ptr(), count);
                 for interface in interfaces {
                     let mut data_size = 0u32;
                     let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
