@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod dock_extras;
 mod services;
+mod shelf;
 mod state;
 mod tray;
 mod types;
@@ -85,6 +87,8 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -120,6 +124,11 @@ fn main() {
             set_dock_hovered,
             set_notch_hovered,
             set_notch_visible,
+            setup_shelf_drop,
+            shelf_thumbnail,
+            shelf_drag_icon,
+            shelf_prune,
+            shelf_open,
             get_active_windows,
             get_tray_apps,
             show_tray_context_menu,
@@ -174,7 +183,10 @@ fn main() {
             updater::check_for_updates,
             updater::install_update,
             updater::get_update_state,
-            updater::updates_enabled
+            updater::updates_enabled,
+            dock_extras::get_dock_extras,
+            dock_extras::open_dock_extra,
+            dock_extras::eject_dock_extra
         ])
         .setup(|app| {
             init_taskbar_marker(app.handle());

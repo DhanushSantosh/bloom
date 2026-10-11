@@ -168,6 +168,8 @@ function SettingsApp() {
 							toggleMusicMode={settings.toggleMusicMode}
 							musicCompactNotch={settings.musicCompactNotch}
 							toggleMusicCompactNotch={settings.toggleMusicCompactNotch}
+							shelfPersist={settings.shelfPersist}
+							toggleShelfPersist={settings.toggleShelfPersist}
 							mediaLayout={settings.mediaLayout}
 							toggleMediaLayout={settings.toggleMediaLayout}
 							mediaAmbienceEnabled={settings.mediaAmbienceEnabled}
@@ -205,6 +207,17 @@ function SettingsApp() {
 							toggleDockAdaptive={settings.toggleDockAdaptive}
 							dockWinNumberEnabled={settings.dockWinNumberEnabled}
 							toggleDockWinNumber={settings.toggleDockWinNumber}
+							dockExtrasPosition={settings.dockExtrasPosition}
+							handleDockExtrasPositionChange={settings.handleDockExtrasPositionChange}
+							dockExtrasDrives={settings.dockExtrasDrives}
+							toggleDockExtrasDrives={settings.toggleDockExtrasDrives}
+							dockExtrasRecycleBin={settings.dockExtrasRecycleBin}
+							toggleDockExtrasRecycleBin={settings.toggleDockExtrasRecycleBin}
+							dockExtrasFolders={settings.dockExtrasFolders}
+							toggleDockExtraFolder={settings.toggleDockExtraFolder}
+							dockExtrasCustomFolders={settings.dockExtrasCustomFolders}
+							handleAddDockExtraFolder={settings.handleAddDockExtraFolder}
+							handleRemoveDockExtraFolder={settings.handleRemoveDockExtraFolder}
 							startIcon={settings.startIcon}
 							handleStartIconChange={settings.handleStartIconChange}
 						/>
