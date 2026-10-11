@@ -27,6 +27,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import type { WidgetConfig } from "./components/StatusWidgetConfig";
+import { EdgeSurface } from "./components/EdgeSurface";
 import {
 	Cpu,
 	MemoryStick,
@@ -2527,6 +2528,7 @@ function App() {
 						default: { type: "spring", stiffness: 500, damping: 30, mass: 1 }
 					}}
 				>
+					<EdgeSurface edge="top" flares={isImpacted} />
 					<AnimatePresence>
 						{isMusicMode && settingsAmbienceEnabled && albumArtUrl && isOpen && !isCalendarMode && (
 							<motion.div
@@ -3580,7 +3582,7 @@ function App() {
 							key="shelf-bubble"
 							ref={shelfBubbleRef}
 							type="button"
-							className="activity-bubble shelf-bubble"
+							className={`activity-bubble shelf-bubble ${isHovered ? "expanded" : ""}`}
 							aria-label={`Open shelf: ${shelfItems.length} item${shelfItems.length === 1 ? "" : "s"}`}
 							// Anchored at the pill's centre, offset past its left edge.
 							style={{ right: "50%" }}
@@ -3622,7 +3624,7 @@ function App() {
 							key="music-bubble"
 							ref={musicBubbleRef}
 							type="button"
-							className="activity-bubble"
+							className={`activity-bubble ${isHovered ? "expanded" : ""}`}
 							aria-label={mediaInfo.title ? `Open music: ${mediaInfo.title}` : "Open music"}
 							// Anchored at the pill's centre, offset past its right edge.
 							style={{ left: "50%" }}
