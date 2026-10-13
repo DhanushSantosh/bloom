@@ -230,7 +230,7 @@ pub fn enumerate() -> Vec<TrayApp> {
             let app = apps
                 .entry(icon.path.to_lowercase())
                 .or_insert_with(|| TrayApp {
-                    name: crate::commands::friendly_process_name(&icon.path),
+                    name: crate::commands::app_display_name(&icon.path, None),
                     window_handles: windows
                         .iter()
                         .filter(|(_, p)| p.eq_ignore_ascii_case(&icon.path))
