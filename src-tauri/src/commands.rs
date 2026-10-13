@@ -484,6 +484,21 @@ pub async fn change_notch_mode(app: AppHandle, mode: String) {
 }
 
 fn get_uwp_launch_cmd(exe_path: &str) -> Option<String> {
+    // A packaged app can only be started through its AppUserModelID, and the
+    // application part after `!` is whatever the package declares ("Claude",
+    // not always "App"). Look the real one up; guess `!App` only if that fails.
+    if let Some(family) = package_family_from_windows_apps_path(exe_path) {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            );
+        }
+        if let Some(aumid) = find_aumid_by_family(&family) {
+            return Some(format!("shell:AppsFolder\\{aumid}"));
+        }
+    }
+
     let path = std::path::Path::new(exe_path);
     let mut is_windows_apps = false;
     let mut package_folder = String::new();
