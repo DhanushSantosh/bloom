@@ -3372,11 +3372,14 @@ pub fn get_network_speed() -> Result<(u64, u64), String> {
         if !ret.is_ok() || table_ptr.is_null() {
             return Err(format!("GetIfTable2 failed: {ret:?}"));
         }
-        let table = &*table_ptr;
-        let num_entries = table.NumEntries;
-        let rows = table.Table.as_ptr();
-        for i in 0..num_entries as usize {
-            let row = &*rows.add(i);
+        // `Table` is declared with one element but holds `NumEntries` rows, so
+        // read them through a pointer to the whole allocation, not the array.
+        let rows = std::slice::from_raw_parts(
+            std::ptr::addr_of!((*table_ptr).Table)
+                .cast::<windows::Win32::NetworkManagement::IpHelper::MIB_IF_ROW2>(),
+            (*table_ptr).NumEntries as usize,
+        );
+        for row in rows {
             total_in = total_in.saturating_add(row.InOctets);
             total_out = total_out.saturating_add(row.OutOctets);
         }
