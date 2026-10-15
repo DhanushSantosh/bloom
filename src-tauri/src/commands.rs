@@ -888,8 +888,9 @@ pub async fn get_active_windows() -> Vec<AppInfo> {
 pub async fn focus_window(hwnd: isize) -> bool {
     tauri::async_runtime::spawn_blocking(move || unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
-            BringWindowToTop, FlashWindow, GetForegroundWindow, IsIconic, IsWindow,
-            IsWindowVisible, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+            BringWindowToTop, FlashWindow, GetAncestor, GetForegroundWindow, IsIconic, IsWindow,
+            IsWindowVisible, SetForegroundWindow, ShowWindow, GA_ROOTOWNER, SW_MINIMIZE,
+            SW_RESTORE, SW_SHOW,
         };
         let hwnd = HWND(hwnd as *mut _);
         if !IsWindow(Some(hwnd)).as_bool() {
@@ -898,8 +899,10 @@ pub async fn focus_window(hwnd: isize) -> bool {
 
         // A second click toggles only this exact foreground window. Another
         // window from the same process (or a recently focused target) is not
-        // grounds to minimize it.
-        if GetForegroundWindow() == hwnd
+        // grounds to minimize it. A popup or dialog the window owns (a WinUI
+        // flyout, a Save dialog) counts as the window itself, as on the taskbar.
+        let foreground = GetForegroundWindow();
+        if (foreground == hwnd || GetAncestor(foreground, GA_ROOTOWNER) == hwnd)
             && IsWindowVisible(hwnd).as_bool()
             && !IsIconic(hwnd).as_bool()
         {
