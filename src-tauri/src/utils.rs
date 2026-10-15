@@ -62,11 +62,82 @@ static TASKBAR_OWNER_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::Atom
 static TASKBAR_OWNER_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 static TASKBAR_MARKER: OnceLock<PathBuf> = OnceLock::new();
+static TASKBAR_WATCHDOG_STARTED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
 
 /// Point the crash-recovery marker at this user's app config dir (called from setup).
 pub fn init_taskbar_marker(app: &tauri::AppHandle) {
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = TASKBAR_MARKER.set(dir.join("taskbar_hidden.flag"));
+    }
+}
+
+/// A separate Bloom process restores Explorer's taskbar when this process is
+/// terminated without running Tauri's exit handlers.
+pub fn start_taskbar_watchdog() -> std::io::Result<()> {
+    let mut started = TASKBAR_WATCHDOG_STARTED
+        .lock()
+        .map_err(|_| std::io::Error::other("taskbar watchdog lock poisoned"))?;
+    if *started {
+        return Ok(());
+    }
+    let marker = TASKBAR_MARKER.get().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "taskbar marker path unavailable",
+        )
+    })?;
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::process::Command::new(std::env::current_exe()?)
+        .arg("--taskbar-watchdog")
+        .arg(std::process::id().to_string())
+        .arg(marker)
+        .spawn()?;
+    *started = true;
+    Ok(())
+}
+
+pub fn run_taskbar_watchdog(parent_pid: u32, marker: PathBuf) {
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    };
+    // Only treat a missing PID as an already-exited parent. Access denied or
+    // another wait failure must not restore the taskbar over a live Bloom.
+    unsafe {
+        match OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) {
+            Ok(parent) => {
+                let result = WaitForSingleObject(parent, INFINITE);
+                let _ = CloseHandle(parent);
+                if result != WAIT_OBJECT_0 {
+                    return;
+                }
+            }
+            Err(_) if GetLastError() == ERROR_INVALID_PARAMETER => {}
+            Err(_) => {
+                return;
+            }
+        }
+    }
+    let _ = TASKBAR_MARKER.set(marker.clone());
+    // Explorer can be restarting at the same time. Retry briefly, but never
+    // act on a marker owned by a replacement Bloom process.
+    for _ in 0..120 {
+        if std::fs::read_to_string(&marker)
+            .ok()
+            .and_then(|contents| parse_marker_pid(&contents))
+            != Some(parent_pid)
+        {
+            return;
+        }
+        restore_taskbar_after_crash();
+        if !marker.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 
@@ -78,12 +149,79 @@ pub fn taskbar_marker_exists() -> bool {
 /// The marker records the user's own taskbar state (`ABM_GETSTATE`) from
 /// before Bloom forced auto-hide, so a crash can't lose it. Markers written by
 /// older versions only contain "1" and carry no state.
-fn marker_contents(original_state: i32) -> String {
-    format!("abstate={original_state}")
+fn marker_contents(
+    original_state: i32,
+    pid: u32,
+    primary: Option<windows::Win32::Foundation::RECT>,
+    secondaries: &std::collections::HashMap<isize, windows::Win32::Foundation::RECT>,
+) -> String {
+    let mut contents = format!("abstate={original_state}\npid={pid}\n");
+    if let Some(rect) = primary {
+        contents.push_str(&format!(
+            "primary={},{},{},{}\n",
+            rect.left, rect.top, rect.right, rect.bottom
+        ));
+    }
+    // One line per secondary taskbar, keyed by its window, for every monitor.
+    let mut secondaries: Vec<_> = secondaries.iter().collect();
+    secondaries.sort_by_key(|(hwnd, _)| **hwnd);
+    for (hwnd, rect) in secondaries {
+        contents.push_str(&format!(
+            "secondary={hwnd},{},{},{},{}\n",
+            rect.left, rect.top, rect.right, rect.bottom
+        ));
+    }
+    contents
 }
 
 fn parse_marker_state(contents: &str) -> Option<i32> {
-    contents.trim().strip_prefix("abstate=")?.parse().ok()
+    contents
+        .lines()
+        .next()?
+        .strip_prefix("abstate=")?
+        .parse()
+        .ok()
+}
+
+fn parse_marker_pid(contents: &str) -> Option<u32> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("pid=")?.parse().ok())
+}
+
+fn parse_rect<'a>(
+    mut parts: impl Iterator<Item = &'a str>,
+) -> Option<windows::Win32::Foundation::RECT> {
+    let mut next = || parts.next()?.parse::<i32>().ok();
+    let rect = windows::Win32::Foundation::RECT {
+        left: next()?,
+        top: next()?,
+        right: next()?,
+        bottom: next()?,
+    };
+    parts.next().is_none().then_some(rect)
+}
+
+fn parse_marker_rect(contents: &str, key: &str) -> Option<windows::Win32::Foundation::RECT> {
+    parse_rect(
+        contents
+            .lines()
+            .find_map(|line| line.strip_prefix(key))?
+            .split(','),
+    )
+}
+
+fn parse_marker_secondaries(
+    contents: &str,
+) -> std::collections::HashMap<isize, windows::Win32::Foundation::RECT> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.strip_prefix("secondary=")?.split(',');
+            let hwnd = parts.next()?.parse::<isize>().ok()?;
+            Some((hwnd, parse_rect(parts)?))
+        })
+        .collect()
 }
 
 /// Restores the native taskbar after a previous session died with it hidden.
@@ -93,10 +231,26 @@ fn parse_marker_state(contents: &str) -> Option<i32> {
 pub fn restore_taskbar_after_crash() {
     let saved = TASKBAR_MARKER
         .get()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|contents| parse_marker_state(&contents));
-    if let Some(state) = saved {
-        ORIGINAL_TASKBAR_STATE.store(state, std::sync::atomic::Ordering::Relaxed);
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    if let Some(contents) = saved {
+        if let Some(state) = parse_marker_state(&contents) {
+            ORIGINAL_TASKBAR_STATE.store(state, std::sync::atomic::Ordering::Relaxed);
+        }
+        // An unplaced rectangle would park the taskbar in the screen's corner.
+        if let Some(rect) = parse_marker_rect(&contents, "primary=").filter(is_placed_rect) {
+            if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+                *guard = Some(rect);
+            }
+        }
+        let mut secondaries = parse_marker_secondaries(&contents);
+        secondaries.retain(|_, rect| is_placed_rect(rect));
+        if !secondaries.is_empty() {
+            if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+                guard
+                    .get_or_insert_with(std::collections::HashMap::new)
+                    .extend(secondaries);
+            }
+        }
     }
     set_taskbar_visibility(true, true);
 }
@@ -178,7 +332,7 @@ pub fn refresh_taskbar_owner() -> bool {
 /// A taskbar window's rectangle, if Explorer has placed it on screen. Right
 /// after Explorer restarts, a new taskbar can still report an empty rectangle;
 /// saving that would restore the taskbar to the screen's corner later, so it
-/// is left unsaved and Explorer keeps the taskbar where it put it.
+/// is left unsaved and restoring asks Explorer for the position instead.
 fn placed_taskbar_rect(
     hwnd: windows::Win32::Foundation::HWND,
 ) -> Option<windows::Win32::Foundation::RECT> {
@@ -191,34 +345,78 @@ fn is_placed_rect(rect: &windows::Win32::Foundation::RECT) -> bool {
     rect.right > rect.left && rect.bottom > rect.top && rect.left > -9000 && rect.top > -9000
 }
 
-pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
+pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) -> bool {
     // Delayed AppBar and tray callbacks cannot hide Windows' taskbar after the
     // dock has been disabled or while its tray is in use.
     if !visible
         && (!dock_enabled()
             || crate::state::TRAY_INTERACTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed))
     {
-        return;
+        return false;
     }
     refresh_taskbar_owner();
     unsafe {
-        use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
+        use windows::Win32::UI::Shell::{
+            SHAppBarMessage, ABM_GETSTATE, ABM_GETTASKBARPOS, ABM_SETSTATE, APPBARDATA,
+        };
         use windows::Win32::UI::WindowsAndMessaging::{
-            FindWindowA, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
+            FindWindowA, GetWindowRect, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
         };
 
         // Startup retries and display/AppBar handlers can still try to hide the
         // taskbar after shutdown restored it, leaving the user without one.
         if !visible && crate::state::SHUTTING_DOWN.load(std::sync::atomic::Ordering::Relaxed) {
-            return;
+            return false;
         }
 
         let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        let Ok(tray_hwnd) = FindWindowA(tray_class, windows::core::PCSTR::null()) else {
+            return false;
+        };
+        // Every secondary taskbar, including third and later monitors.
+        let secondary_trays = secondary_taskbar_windows();
+
+        // Legacy crash markers did not save the original window rectangle.
+        // Explorer's AppBar position can still recover it after Bloom moved the
+        // taskbar window off-screen.
+        if visible {
+            if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+                if guard.is_none() {
+                    let mut position = APPBARDATA {
+                        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+                        hWnd: tray_hwnd,
+                        ..Default::default()
+                    };
+                    if SHAppBarMessage(ABM_GETTASKBARPOS, &mut position) != 0
+                        && is_placed_rect(&position.rc)
+                    {
+                        *guard = Some(position.rc);
+                    }
+                }
+            }
+        }
+
+        if !visible {
+            if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+                if guard.is_none() {
+                    *guard = placed_taskbar_rect(tray_hwnd);
+                }
+            }
+            if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+                let rects = guard.get_or_insert_with(std::collections::HashMap::new);
+                for hwnd in &secondary_trays {
+                    if let Some(rect) = placed_taskbar_rect(*hwnd) {
+                        rects.entry(hwnd.0 as isize).or_insert(rect);
+                    }
+                }
+            }
+        }
 
         // Save original taskbar state before modifying
         if ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed) == -1 {
             let mut get_abd = APPBARDATA {
                 cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+                hWnd: tray_hwnd,
                 ..Default::default()
             };
             let original_state = SHAppBarMessage(ABM_GETSTATE, &mut get_abd);
@@ -226,17 +424,42 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 .store(original_state as i32, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Crash-recovery marker: a hidden taskbar is persisted so the next launch can
-        // undo it if we're ever force-killed (Task Manager / TerminateProcess skips cleanup).
+        // Persist the original state and placement before hiding. The watchdog
+        // restores it if this process is force-killed, and startup is a fallback.
         // Written after the original state is known, so the marker can carry it.
-        if visible {
-            if let Some(p) = TASKBAR_MARKER.get() {
-                let _ = std::fs::remove_file(p);
+        if !visible {
+            if start_taskbar_watchdog().is_err() {
+                return false;
             }
-        } else if let Some(p) = TASKBAR_MARKER.get() {
-            if !p.exists() {
-                let original = ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed);
-                let _ = std::fs::write(p, marker_contents(original));
+            let Some(p) = TASKBAR_MARKER.get() else {
+                return false;
+            };
+            let original = ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed);
+            let primary = ORIGINAL_TRAY_RECT.lock().ok().and_then(|guard| *guard);
+            let secondaries = ORIGINAL_SEC_TRAY_RECTS
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+                .unwrap_or_default();
+            let contents = marker_contents(original, std::process::id(), primary, &secondaries);
+            let existing = std::fs::read_to_string(p).ok();
+            // Never take over a marker that another Bloom process owns.
+            if (existing.is_some() || p.exists())
+                && existing.as_deref().and_then(parse_marker_pid) != Some(std::process::id())
+            {
+                return false;
+            }
+            // Rewritten when a monitor added since the last hide brings another
+            // taskbar, so the watchdog can restore it as well.
+            if existing.as_deref() != Some(contents.as_str()) {
+                use std::io::Write;
+                let written = std::fs::File::create(p).and_then(|mut file| {
+                    file.write_all(contents.as_bytes())?;
+                    file.sync_all()
+                });
+                if written.is_err() {
+                    return false;
+                }
             }
         }
 
@@ -258,13 +481,15 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
         // 1. Set the taskbar state (Auto-hide or Always-on-top)
         let mut abd = APPBARDATA {
             cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: tray_hwnd,
             lParam: windows::Win32::Foundation::LPARAM(state_val),
             ..Default::default()
         };
         SHAppBarMessage(ABM_SETSTATE, &mut abd);
 
         // 2. Control visibility of the primary taskbar
-        if let Ok(tray_hwnd) = FindWindowA(tray_class, windows::core::PCSTR::null()) {
+        let mut primary_positioned = true;
+        {
             use windows::Win32::UI::WindowsAndMessaging::{
                 GetWindowLongA, SetLayeredWindowAttributes, SetWindowLongA, SetWindowPos,
                 GWL_EXSTYLE, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
@@ -286,7 +511,7 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 }
                 if let Ok(guard) = ORIGINAL_TRAY_RECT.lock() {
                     if let Some(rect) = *guard {
-                        let _ = SetWindowPos(
+                        primary_positioned = SetWindowPos(
                             tray_hwnd,
                             None,
                             rect.left,
@@ -294,7 +519,8 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                             0,
                             0,
                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
+                        )
+                        .is_ok();
                     }
                 }
                 let _ = ShowWindow(tray_hwnd, SW_SHOW);
@@ -318,45 +544,32 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
             }
         }
 
-        // 3. Control every secondary taskbar, including third and later monitors.
-        for secondary_tray_hwnd in secondary_taskbar_windows() {
+        // 3. Control every secondary taskbar (multi-monitor)
+        let mut secondary_positioned = true;
+        for &secondary_tray_hwnd in &secondary_trays {
             use windows::Win32::UI::WindowsAndMessaging::{
                 SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
             };
             if visible {
-                if let Ok(guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
-                    if let Some(rect) = guard
+                let saved = ORIGINAL_SEC_TRAY_RECTS.lock().ok().and_then(|guard| {
+                    guard
                         .as_ref()
-                        .and_then(|rects| rects.get(&(secondary_tray_hwnd.0 as isize)))
-                    {
-                        let _ = SetWindowPos(
-                            secondary_tray_hwnd,
-                            None,
-                            rect.left,
-                            rect.top,
-                            0,
-                            0,
-                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
-                    }
+                        .and_then(|rects| rects.get(&(secondary_tray_hwnd.0 as isize)).copied())
+                });
+                if let Some(rect) = saved {
+                    secondary_positioned &= SetWindowPos(
+                        secondary_tray_hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                    .is_ok();
                 }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_SHOW);
-                if IsWindowVisible(secondary_tray_hwnd).as_bool() {
-                    if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
-                        if let Some(rects) = guard.as_mut() {
-                            rects.remove(&(secondary_tray_hwnd.0 as isize));
-                        }
-                    }
-                }
             } else {
-                if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
-                    if let Some(rect) = placed_taskbar_rect(secondary_tray_hwnd) {
-                        guard
-                            .get_or_insert_with(std::collections::HashMap::new)
-                            .entry(secondary_tray_hwnd.0 as isize)
-                            .or_insert(rect);
-                    }
-                }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_HIDE);
                 let _ = SetWindowPos(
                     secondary_tray_hwnd,
@@ -369,6 +582,33 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 );
             }
         }
+        let on_screen = |hwnd| {
+            let mut rect = windows::Win32::Foundation::RECT::default();
+            GetWindowRect(hwnd, &mut rect).is_ok() && rect.left > -9000 && rect.top > -9000
+        };
+        let primary_matches = primary_positioned
+            && IsWindowVisible(tray_hwnd).as_bool() == visible
+            && (!visible || on_screen(tray_hwnd));
+        let secondary_matches = secondary_positioned
+            && secondary_trays.iter().all(|&hwnd| {
+                IsWindowVisible(hwnd).as_bool() == visible && (!visible || on_screen(hwnd))
+            });
+        if visible && primary_matches && secondary_matches {
+            if let Some(p) = TASKBAR_MARKER.get() {
+                if p.exists() && std::fs::remove_file(p).is_err() {
+                    return false;
+                }
+            }
+            // Restored taskbars no longer need their saved placement.
+            if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+                if let Some(rects) = guard.as_mut() {
+                    for hwnd in &secondary_trays {
+                        rects.remove(&(hwnd.0 as isize));
+                    }
+                }
+            }
+        }
+        primary_matches && secondary_matches
     }
 }
 
@@ -1030,13 +1270,44 @@ pub fn capture_hwnd_to_base64(hwnd: HWND, max_width: u32, max_height: u32) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_env_vars, is_placed_rect, marker_contents, parse_marker_state};
+    use super::{
+        expand_env_vars, is_placed_rect, marker_contents, parse_marker_pid, parse_marker_rect,
+        parse_marker_secondaries, parse_marker_state,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn taskbar_marker_round_trips_the_original_state() {
         for state in [0, 1, 2, 3] {
-            assert_eq!(parse_marker_state(&marker_contents(state)), Some(state));
+            let rect = windows::Win32::Foundation::RECT {
+                left: 12,
+                top: 34,
+                right: 1234,
+                bottom: 56,
+            };
+            let contents = marker_contents(state, 1234, Some(rect), &HashMap::new());
+            assert_eq!(parse_marker_state(&contents), Some(state));
+            assert_eq!(parse_marker_pid(&contents), Some(1234));
+            assert_eq!(parse_marker_rect(&contents, "primary="), Some(rect));
+            assert!(parse_marker_secondaries(&contents).is_empty());
         }
+    }
+
+    #[test]
+    fn taskbar_marker_round_trips_every_secondary_taskbar() {
+        let rect = |left, top| windows::Win32::Foundation::RECT {
+            left,
+            top,
+            right: left + 1920,
+            bottom: top + 48,
+        };
+        let secondaries = HashMap::from([(0x1010, rect(1920, 1032)), (0x2020, rect(-1920, 1032))]);
+        let contents = marker_contents(1, 7, None, &secondaries);
+        assert_eq!(parse_marker_rect(&contents, "primary="), None);
+        assert_eq!(parse_marker_secondaries(&contents), secondaries);
+        // A damaged line is skipped without losing the others.
+        let damaged = format!("{contents}secondary=99,1,2,3\nsecondary=x,1,2,3,4\n");
+        assert_eq!(parse_marker_secondaries(&damaged), secondaries);
     }
 
     #[test]
@@ -1047,6 +1318,8 @@ mod tests {
         assert_eq!(parse_marker_state("abstate="), None);
         assert_eq!(parse_marker_state("abstate=x"), None);
         assert_eq!(parse_marker_state("abstate=2\r\n"), Some(2));
+        assert_eq!(parse_marker_pid("abstate=2\r\n"), None);
+        assert_eq!(parse_marker_rect("primary=1,2,3", "primary="), None);
     }
 
     #[test]
