@@ -2218,6 +2218,7 @@ pub fn setup_mouse_hook(app_handle: AppHandle) {
         SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), None, 0)
             .expect("Failed to install mouse hook");
     }
+    crate::diagnostics::record("mouse_hook", "installed");
 }
 
 /// Top-edge hover-intent delay in milliseconds. `0` disables the gate so the
@@ -3267,7 +3268,11 @@ pub fn register_appbar(window: tauri::WebviewWindow) {
             };
 
             if !MAIN_APPBAR_REGISTERED.load(Ordering::Relaxed) {
-                SHAppBarMessage(ABM_NEW, &mut abd);
+                let registered = SHAppBarMessage(ABM_NEW, &mut abd);
+                crate::diagnostics::record(
+                    "main_appbar",
+                    &format!("registration_result={registered}"),
+                );
                 MAIN_APPBAR_REGISTERED.store(true, Ordering::Relaxed);
             }
 
@@ -3473,7 +3478,11 @@ fn register_dock_appbar_inner(window: tauri::WebviewWindow, attempt: i32) {
             };
 
             if !DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
-                SHAppBarMessage(ABM_NEW, &mut abd);
+                let registered = SHAppBarMessage(ABM_NEW, &mut abd);
+                crate::diagnostics::record(
+                    "dock_appbar",
+                    &format!("registration_result={registered}"),
+                );
                 DOCK_APPBAR_REGISTERED.store(true, Ordering::Relaxed);
             }
 
@@ -4028,6 +4037,10 @@ pub fn watch_webview_processes(app: &AppHandle) {
                     if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
                         || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
                     {
+                        crate::diagnostics::record(
+                            "webview_failure",
+                            &format!("process_kind={kind:?}"),
+                        );
                         recover_from_webview_failure(&handle);
                     }
                     Ok(())
@@ -4053,8 +4066,10 @@ fn recover_from_webview_failure(handle: &AppHandle) {
         // A webview that dies right after launch would die again after a
         // restart, so give the taskbar back and exit instead of looping.
         if started.is_some_and(|elapsed| elapsed < Duration::from_secs(30)) {
+            crate::diagnostics::record("webview_recovery", "startup failure; exiting safely");
             crate::commands::restore_taskbar_and_exit(&handle);
         } else {
+            crate::diagnostics::record("webview_recovery", "restarting Bloom");
             crate::commands::restart_bloom(handle).await;
         }
     });
