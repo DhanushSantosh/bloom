@@ -39,8 +39,21 @@ pub fn record(event: &str, detail: &str) {
     let Some(path) = LOG_PATH.get() else {
         return;
     };
-    let Ok(path) = path.try_lock() else {
-        return;
+    // Threads log at the same moment during startup, so wait briefly for the
+    // lock rather than dropping the line. The wait is bounded, so a panic
+    // raised while this thread already holds the lock can't deadlock.
+    let mut attempts = 0;
+    let path = loop {
+        match path.try_lock() {
+            Ok(path) => break path,
+            // A thread that panicked mid-write leaves the path itself intact.
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+            Err(_) if attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(_) => return,
+        }
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
