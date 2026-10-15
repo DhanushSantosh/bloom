@@ -3366,18 +3366,24 @@ pub fn get_network_speed() -> Result<(u64, u64), String> {
 
     let (mut total_in, mut total_out) = (0u64, 0u64);
     unsafe {
-        let mut table_ptr: *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2 =
-            std::ptr::null_mut();
-        let ret = windows::Win32::NetworkManagement::IpHelper::GetIfTable2(&mut table_ptr);
-        if !ret.is_ok() || table_ptr.is_null() {
+        // GetIfTable2 allocates the table and writes its address here.
+        let mut out = std::mem::MaybeUninit::<
+            *mut windows::Win32::NetworkManagement::IpHelper::MIB_IF_TABLE2,
+        >::uninit();
+        let ret = windows::Win32::NetworkManagement::IpHelper::GetIfTable2(out.as_mut_ptr());
+        if !ret.is_ok() {
             return Err(format!("GetIfTable2 failed: {ret:?}"));
         }
+        let Some(table) = std::ptr::NonNull::new(out.assume_init()) else {
+            return Err("GetIfTable2 returned no table".to_string());
+        };
+        let table_ptr = table.as_ptr();
         // `Table` is declared with one element but holds `NumEntries` rows, so
         // read them through a pointer to the whole allocation, not the array.
         let rows = std::slice::from_raw_parts(
             std::ptr::addr_of!((*table_ptr).Table)
                 .cast::<windows::Win32::NetworkManagement::IpHelper::MIB_IF_ROW2>(),
-            (*table_ptr).NumEntries as usize,
+            table.as_ref().NumEntries as usize,
         );
         for row in rows {
             total_in = total_in.saturating_add(row.InOctets);
