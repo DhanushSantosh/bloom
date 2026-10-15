@@ -885,64 +885,51 @@ pub async fn get_active_windows() -> Vec<AppInfo> {
 }
 
 #[tauri::command]
-pub async fn focus_window(hwnd: isize) {
+pub async fn focus_window(hwnd: isize) -> bool {
     tauri::async_runtime::spawn_blocking(move || unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-            SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
+            BringWindowToTop, FlashWindow, GetForegroundWindow, IsIconic, IsWindow,
+            IsWindowVisible, SetForegroundWindow, ShowWindow, SW_MINIMIZE, SW_RESTORE, SW_SHOW,
         };
         let hwnd = HWND(hwnd as *mut _);
-        let my_pid = std::process::id();
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return false;
+        }
+
+        // A second click toggles only this exact foreground window. Another
+        // window from the same process (or a recently focused target) is not
+        // grounds to minimize it.
+        if GetForegroundWindow() == hwnd
+            && IsWindowVisible(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+        {
+            let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            return IsIconic(hwnd).as_bool();
+        }
 
         if !IsWindowVisible(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            let _ = SetForegroundWindow(hwnd);
-        } else if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-            let _ = SetForegroundWindow(hwnd);
-        } else {
-            // Minimize if: window is foreground, OR same process as foreground (not Bloom), OR recently focused
-            let fg = GetForegroundWindow();
-            let mut should_minimize = false;
-
-            if !fg.is_invalid() && fg == hwnd {
-                should_minimize = true;
-            } else if !fg.is_invalid() {
-                let mut fg_pid = 0u32;
-                let mut target_pid = 0u32;
-                GetWindowThreadProcessId(fg, Some(&mut fg_pid));
-                GetWindowThreadProcessId(hwnd, Some(&mut target_pid));
-                if fg_pid == target_pid && fg_pid != 0 && fg_pid != my_pid {
-                    should_minimize = true;
-                }
-            }
-
-            if !should_minimize {
-                let now = crate::utils::get_now_ms();
-                should_minimize = if let Some(map) = crate::state::FOCUS_TIMESTAMPS.get() {
-                    if let Ok(guard) = map.lock() {
-                        guard
-                            .get(&(hwnd.0 as *mut () as isize))
-                            .map(|ts| now - ts < 2000)
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-            }
-
-            if should_minimize {
-                let _ = ShowWindow(hwnd, SW_MINIMIZE);
-            } else {
-                let _ = SetForegroundWindow(hwnd);
-            }
         }
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
+            return true;
+        }
+        // Foreground activation is restricted by Windows. Uncover the window,
+        // retry once, then request attention instead of silently claiming focus.
+        let _ = BringWindowToTop(hwnd);
+        if GetForegroundWindow() == hwnd
+            || (SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd)
+        {
+            return true;
+        }
+        let _ = FlashWindow(hwnd, true);
+        false
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or(false)
 }
 
 /// Brings one window of a multi-window dock item forward, like the taskbar's
