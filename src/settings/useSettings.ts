@@ -278,6 +278,34 @@ export function useSettings() {
 		return operation;
 	};
 
+	// Coordinates only need the backend settings file. Keep them out of the
+	// browser's localStorage mirror while preserving the same queued/error path.
+	const saveLocation = (key: "bloom-weather-lat" | "bloom-weather-lon", value: string | null): Promise<boolean> => {
+		const operation = saveQueue.current.then(async () => {
+			if (saveFailed.current) return false;
+			try {
+				await invoke<void>("save_setting", { key, value });
+			} catch (error) {
+				console.error(`Failed to save ${key}:`, error);
+				saveFailed.current = true;
+				sessionStorage.setItem("bloom-settings-save-error", "true");
+				setSaveError(true);
+				window.setTimeout(() => window.location.reload(), 0);
+				return false;
+			}
+			try {
+				localStorage.removeItem(key);
+				sessionStorage.removeItem("bloom-settings-save-error");
+			} catch (error) {
+				console.warn("Settings mirror cleanup failed:", error);
+			}
+			setSaveError(false);
+			return true;
+		});
+		saveQueue.current = operation.then(() => {});
+		return operation;
+	};
+
 	const dismissSaveError = () => {
 		sessionStorage.removeItem("bloom-settings-save-error");
 		setSaveError(false);
@@ -770,8 +798,8 @@ export function useSettings() {
 		setShowCityDropdown(false);
 		setCitySearchResults([]);
 		const saved =
-			(await saveSetting("bloom-weather-lat", city.latitude.toString())) &&
-			(await saveSetting("bloom-weather-lon", city.longitude.toString())) &&
+			(await saveLocation("bloom-weather-lat", city.latitude.toString())) &&
+			(await saveLocation("bloom-weather-lon", city.longitude.toString())) &&
 			(await saveSetting("bloom-weather-city", city.name));
 		if (saved) emit("weather-refresh", { lat: city.latitude, lon: city.longitude });
 	};
@@ -781,8 +809,8 @@ export function useSettings() {
 		setShowCityDropdown(false);
 		setCitySearchResults([]);
 		const saved =
-			(await saveSetting("bloom-weather-lat", null)) &&
-			(await saveSetting("bloom-weather-lon", null)) &&
+			(await saveLocation("bloom-weather-lat", null)) &&
+			(await saveLocation("bloom-weather-lon", null)) &&
 			(await saveSetting("bloom-weather-city", null));
 		if (saved) emit("weather-refresh", true);
 	};
