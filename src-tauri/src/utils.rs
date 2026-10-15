@@ -175,6 +175,22 @@ pub fn refresh_taskbar_owner() -> bool {
     }
 }
 
+/// A taskbar window's rectangle, if Explorer has placed it on screen. Right
+/// after Explorer restarts, a new taskbar can still report an empty rectangle;
+/// saving that would restore the taskbar to the screen's corner later, so it
+/// is left unsaved and Explorer keeps the taskbar where it put it.
+fn placed_taskbar_rect(
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Option<windows::Win32::Foundation::RECT> {
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) }.ok()?;
+    is_placed_rect(&rect).then_some(rect)
+}
+
+fn is_placed_rect(rect: &windows::Win32::Foundation::RECT) -> bool {
+    rect.right > rect.left && rect.bottom > rect.top && rect.left > -9000 && rect.top > -9000
+}
+
 pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     // Delayed AppBar and tray callbacks cannot hide Windows' taskbar after the
     // dock has been disabled or while its tray is in use.
@@ -188,7 +204,7 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     unsafe {
         use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
         use windows::Win32::UI::WindowsAndMessaging::{
-            FindWindowA, GetWindowRect, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
+            FindWindowA, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
         };
 
         // Startup retries and display/AppBar handlers can still try to hide the
@@ -283,15 +299,9 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 }
                 let _ = ShowWindow(tray_hwnd, SW_SHOW);
             } else {
-                let has_rect = ORIGINAL_TRAY_RECT
-                    .lock()
-                    .map(|g| g.is_some())
-                    .unwrap_or(false);
-                if !has_rect {
-                    let mut rect = windows::Win32::Foundation::RECT::default();
-                    let _ = GetWindowRect(tray_hwnd, &mut rect);
-                    if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
-                        *guard = Some(rect);
+                if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+                    if guard.is_none() {
+                        *guard = placed_taskbar_rect(tray_hwnd);
                     }
                 }
                 let _ = ShowWindow(tray_hwnd, SW_HIDE);
@@ -340,8 +350,7 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                 }
             } else {
                 if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
-                    let mut rect = windows::Win32::Foundation::RECT::default();
-                    if GetWindowRect(secondary_tray_hwnd, &mut rect).is_ok() {
+                    if let Some(rect) = placed_taskbar_rect(secondary_tray_hwnd) {
                         guard
                             .get_or_insert_with(std::collections::HashMap::new)
                             .entry(secondary_tray_hwnd.0 as isize)
@@ -1021,7 +1030,7 @@ pub fn capture_hwnd_to_base64(hwnd: HWND, max_width: u32, max_height: u32) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_env_vars, marker_contents, parse_marker_state};
+    use super::{expand_env_vars, is_placed_rect, marker_contents, parse_marker_state};
 
     #[test]
     fn taskbar_marker_round_trips_the_original_state() {
@@ -1038,6 +1047,21 @@ mod tests {
         assert_eq!(parse_marker_state("abstate="), None);
         assert_eq!(parse_marker_state("abstate=x"), None);
         assert_eq!(parse_marker_state("abstate=2\r\n"), Some(2));
+    }
+
+    #[test]
+    fn unplaced_taskbar_rects_are_not_restored() {
+        let rect = |left, top, right, bottom| windows::Win32::Foundation::RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        assert!(is_placed_rect(&rect(0, 1020, 1920, 1080)));
+        assert!(is_placed_rect(&rect(-1920, 1032, 0, 1080)));
+        // A taskbar Explorer hasn't placed yet, and one Bloom parked off-screen.
+        assert!(!is_placed_rect(&rect(0, 0, 0, 0)));
+        assert!(!is_placed_rect(&rect(-10000, -10000, -8080, -9952)));
     }
 
     #[test]
