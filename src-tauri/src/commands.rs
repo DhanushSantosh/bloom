@@ -884,8 +884,22 @@ pub async fn get_active_windows() -> Vec<AppInfo> {
     .unwrap_or_default()
 }
 
+/// The window outside Bloom that most recently became the foreground window.
+fn last_focused_window() -> Option<HWND> {
+    let map = crate::state::FOCUS_TIMESTAMPS.get()?.lock().ok()?;
+    let (&last, _) = map.iter().max_by_key(|(_, &at)| at)?;
+    let last = HWND(last as *mut _);
+    unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(last)) }
+        .as_bool()
+        .then_some(last)
+}
+
 #[tauri::command]
-pub async fn focus_window(hwnd: isize) -> bool {
+pub async fn focus_window(app: AppHandle, hwnd: isize) -> bool {
+    let dock = app
+        .get_webview_window("dock")
+        .and_then(|window| window.hwnd().ok())
+        .map(|dock| dock.0 as isize);
     tauri::async_runtime::spawn_blocking(move || unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
             BringWindowToTop, FlashWindow, GetAncestor, GetForegroundWindow, IsIconic, IsWindow,
@@ -901,7 +915,14 @@ pub async fn focus_window(hwnd: isize) -> bool {
         // window from the same process (or a recently focused target) is not
         // grounds to minimize it. A popup or dialog the window owns (a WinUI
         // flyout, a Save dialog) counts as the window itself, as on the taskbar.
-        let foreground = GetForegroundWindow();
+        let mut foreground = GetForegroundWindow();
+        // Clicking the dock can make it the foreground window for a moment.
+        // The window in front is then the one focused last before the click.
+        if dock == Some(foreground.0 as isize) {
+            if let Some(last) = last_focused_window() {
+                foreground = last;
+            }
+        }
         if (foreground == hwnd || GetAncestor(foreground, GA_ROOTOWNER) == hwnd)
             && IsWindowVisible(hwnd).as_bool()
             && !IsIconic(hwnd).as_bool()
