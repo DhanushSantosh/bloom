@@ -54,9 +54,12 @@ pub fn resolve_shortcut(path: &str) -> Option<(String, String)> {
 
 pub static ORIGINAL_TRAY_RECT: std::sync::Mutex<Option<windows::Win32::Foundation::RECT>> =
     std::sync::Mutex::new(None);
-static ORIGINAL_SEC_TRAY_RECT: std::sync::Mutex<Option<windows::Win32::Foundation::RECT>> =
-    std::sync::Mutex::new(None);
+static ORIGINAL_SEC_TRAY_RECTS: std::sync::Mutex<
+    Option<std::collections::HashMap<isize, windows::Win32::Foundation::RECT>>,
+> = std::sync::Mutex::new(None);
 static ORIGINAL_TASKBAR_STATE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static TASKBAR_OWNER_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TASKBAR_OWNER_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
 static TASKBAR_MARKER: OnceLock<PathBuf> = OnceLock::new();
 
@@ -98,6 +101,80 @@ pub fn restore_taskbar_after_crash() {
     set_taskbar_visibility(true, true);
 }
 
+pub fn secondary_taskbar_windows() -> Vec<windows::Win32::Foundation::HWND> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameA};
+
+    unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let windows = &mut *(lparam.0 as *mut Vec<HWND>);
+        let mut class = [0u8; 64];
+        let length = GetClassNameA(hwnd, &mut class);
+        if &class[..length as usize] == b"Shell_SecondaryTrayWnd" {
+            windows.push(hwnd);
+        }
+        BOOL(1)
+    }
+
+    let mut windows = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(collect),
+            LPARAM(&mut windows as *mut Vec<HWND> as isize),
+        );
+    }
+    windows
+}
+
+pub fn any_native_taskbar_visible() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, IsWindowVisible};
+    unsafe {
+        let primary = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        FindWindowA(primary, windows::core::PCSTR::null())
+            .is_ok_and(|hwnd| IsWindowVisible(hwnd).as_bool())
+            || secondary_taskbar_windows()
+                .into_iter()
+                .any(|hwnd| IsWindowVisible(hwnd).as_bool())
+    }
+}
+
+fn reset_taskbar_rects_after_shell_restart() {
+    if let Ok(mut guard) = ORIGINAL_TRAY_RECT.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+        *guard = None;
+    }
+}
+
+/// Explorer can recreate the tray windows while Bloom remains active. A new
+/// owner or primary HWND invalidates the saved tray rectangles; a DPI broadcast
+/// with the same HWND must not discard them while the taskbar is parked offscreen.
+pub fn refresh_taskbar_owner() -> bool {
+    use std::sync::atomic::Ordering;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, GetWindowThreadProcessId};
+    unsafe {
+        let class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        let Ok(hwnd) = FindWindowA(class, windows::core::PCSTR::null()) else {
+            return false;
+        };
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let previous = TASKBAR_OWNER_PID.swap(pid, Ordering::Relaxed);
+        let previous_hwnd = TASKBAR_OWNER_HWND.swap(hwnd.0 as isize, Ordering::Relaxed);
+        if (previous != 0 && previous != pid)
+            || (previous_hwnd != 0 && previous_hwnd != hwnd.0 as isize)
+        {
+            reset_taskbar_rects_after_shell_restart();
+            return true;
+        }
+        false
+    }
+}
+
 pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     // Delayed AppBar and tray callbacks cannot hide Windows' taskbar after the
     // dock has been disabled or while its tray is in use.
@@ -107,10 +184,11 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
     {
         return;
     }
+    refresh_taskbar_owner();
     unsafe {
         use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, APPBARDATA};
         use windows::Win32::UI::WindowsAndMessaging::{
-            FindWindowA, GetWindowRect, ShowWindow, SW_HIDE, SW_SHOW,
+            FindWindowA, GetWindowRect, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
         };
 
         // Startup retries and display/AppBar handlers can still try to hide the
@@ -120,8 +198,6 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
         }
 
         let tray_class = windows::core::PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
-        let secondary_tray_class =
-            windows::core::PCSTR(c"Shell_SecondaryTrayWnd".as_ptr() as *const u8);
 
         // Save original taskbar state before modifying
         if ORIGINAL_TASKBAR_STATE.load(std::sync::atomic::Ordering::Relaxed) == -1 {
@@ -232,16 +308,17 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
             }
         }
 
-        // 3. Control visibility of secondary taskbars (multi-monitor)
-        if let Ok(secondary_tray_hwnd) =
-            FindWindowA(secondary_tray_class, windows::core::PCSTR::null())
-        {
+        // 3. Control every secondary taskbar, including third and later monitors.
+        for secondary_tray_hwnd in secondary_taskbar_windows() {
             use windows::Win32::UI::WindowsAndMessaging::{
                 SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
             };
             if visible {
-                if let Ok(guard) = ORIGINAL_SEC_TRAY_RECT.lock() {
-                    if let Some(rect) = *guard {
+                if let Ok(guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+                    if let Some(rect) = guard
+                        .as_ref()
+                        .and_then(|rects| rects.get(&(secondary_tray_hwnd.0 as isize)))
+                    {
                         let _ = SetWindowPos(
                             secondary_tray_hwnd,
                             None,
@@ -254,16 +331,21 @@ pub fn set_taskbar_visibility(visible: bool, always_on_top: bool) {
                     }
                 }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_SHOW);
+                if IsWindowVisible(secondary_tray_hwnd).as_bool() {
+                    if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
+                        if let Some(rects) = guard.as_mut() {
+                            rects.remove(&(secondary_tray_hwnd.0 as isize));
+                        }
+                    }
+                }
             } else {
-                let has_sec_rect = ORIGINAL_SEC_TRAY_RECT
-                    .lock()
-                    .map(|g| g.is_some())
-                    .unwrap_or(false);
-                if !has_sec_rect {
+                if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECTS.lock() {
                     let mut rect = windows::Win32::Foundation::RECT::default();
-                    let _ = GetWindowRect(secondary_tray_hwnd, &mut rect);
-                    if let Ok(mut guard) = ORIGINAL_SEC_TRAY_RECT.lock() {
-                        *guard = Some(rect);
+                    if GetWindowRect(secondary_tray_hwnd, &mut rect).is_ok() {
+                        guard
+                            .get_or_insert_with(std::collections::HashMap::new)
+                            .entry(secondary_tray_hwnd.0 as isize)
+                            .or_insert(rect);
                     }
                 }
                 let _ = ShowWindow(secondary_tray_hwnd, SW_HIDE);
