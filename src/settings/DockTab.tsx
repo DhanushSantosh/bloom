@@ -1,4 +1,5 @@
-import type { ChangeEvent, CSSProperties } from "react";
+import { useEffect, useState, type ChangeEvent, type CSSProperties } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
 	Monitor,
 	Eye,
@@ -13,13 +14,65 @@ import {
 	LayoutPanelLeft,
 	HardDrive,
 	Trash2,
+	Copy,
 	FolderOpen,
 	FolderPlus,
 	Plus,
 	X
 } from "lucide-react";
 import { SettingRow } from "./SettingRow";
-import { KNOWN_FOLDER_OPTIONS, parseEnabledFolders, parseCustomFolders } from "../dockExtras";
+import {
+	KNOWN_FOLDER_OPTIONS,
+	driveLetter,
+	parseEnabledFolders,
+	parseCustomFolders,
+	parseHiddenDrives,
+	type DockExtra
+} from "../dockExtras";
+
+/** One chip per connected drive, plus hidden drives that aren't connected. */
+function DrivePicker({
+	hiddenDrives,
+	onToggle
+}: {
+	hiddenDrives: string;
+	onToggle: (letter: string) => void;
+}) {
+	const [drives, setDrives] = useState<{ letter: string; name: string }[]>([]);
+
+	useEffect(() => {
+		invoke<DockExtra[]>("get_dock_drives")
+			.then((list) =>
+				setDrives(
+					list.flatMap((drive) => {
+						const letter = driveLetter(drive);
+						return letter ? [{ letter, name: drive.name }] : [];
+					})
+				)
+			)
+			.catch((error) => console.error("Failed to list drives:", error));
+	}, []);
+
+	const hidden = parseHiddenDrives(hiddenDrives);
+	const disconnected = hidden
+		.filter((letter) => !drives.some((drive) => drive.letter === letter))
+		.map((letter) => ({ letter, name: `${letter}: (not connected)` }));
+
+	return (
+		<div style={{ display: "flex", gap: "8px", flexWrap: "wrap", paddingLeft: "34px" }}>
+			{[...drives, ...disconnected].map((drive) => (
+				<button
+					key={drive.letter}
+					type="button"
+					className={`folder-chip ${hidden.includes(drive.letter) ? "" : "active"}`}
+					onClick={() => onToggle(drive.letter)}
+				>
+					{drive.name}
+				</button>
+			))}
+		</div>
+	);
+}
 
 const START_ICON_PRESETS = [
 	{ key: "default", src: "/bloom.png", label: "Bloom" },
@@ -65,8 +118,12 @@ interface DockTabProps {
 	handleDockExtrasPositionChange: (position: string) => void;
 	dockExtrasDrives: boolean;
 	toggleDockExtrasDrives: () => void;
+	dockExtrasHiddenDrives: string;
+	toggleDockExtrasDrive: (letter: string) => void;
 	dockExtrasRecycleBin: boolean;
 	toggleDockExtrasRecycleBin: () => void;
+	dockTaskView: boolean;
+	toggleDockTaskView: () => void;
 	dockExtrasFolders: string;
 	toggleDockExtraFolder: (id: string) => void;
 	dockExtrasCustomFolders: string;
@@ -97,8 +154,12 @@ export function DockTab({
 	handleDockExtrasPositionChange,
 	dockExtrasDrives,
 	toggleDockExtrasDrives,
+	dockExtrasHiddenDrives,
+	toggleDockExtrasDrive,
 	dockExtrasRecycleBin,
 	toggleDockExtrasRecycleBin,
+	dockTaskView,
+	toggleDockTaskView,
 	dockExtrasFolders,
 	toggleDockExtraFolder,
 	dockExtrasCustomFolders,
@@ -198,6 +259,13 @@ export function DockTab({
 							</label>
 						</SettingRow>
 
+						<SettingRow icon={Copy} label="Task View" desc="Show the Task View button beside Start">
+							<label className="toggle-switch">
+								<input type="checkbox" checked={dockTaskView} onChange={toggleDockTaskView} />
+								<span className="slider"></span>
+							</label>
+						</SettingRow>
+
 						<SettingRow
 							icon={Keyboard}
 							label="Win+Number Shortcuts"
@@ -260,6 +328,15 @@ export function DockTab({
 										<span className="slider"></span>
 									</label>
 								</SettingRow>
+
+								{dockExtrasDrives && (
+									<div className="setting-item" style={{ paddingTop: 0 }}>
+										<DrivePicker
+											hiddenDrives={dockExtrasHiddenDrives}
+											onToggle={toggleDockExtrasDrive}
+										/>
+									</div>
+								)}
 
 								<SettingRow
 									icon={Trash2}
