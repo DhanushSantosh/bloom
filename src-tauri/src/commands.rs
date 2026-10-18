@@ -590,26 +590,21 @@ fn send_key_tap(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY, ho
 /// Depending on the Windows build it is hosted by StartMenuExperienceHost
 /// (older) or SearchHost (Windows 11 24H2+), so match both. The dock is
 /// WS_EX_NOACTIVATE, so clicking it never steals focus from an open menu.
-fn is_start_menu_open() -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    is_start_menu_window(unsafe { GetForegroundWindow() })
-}
-
-/// Whether `hwnd` belongs to the process hosting the Start menu.
-pub fn is_start_menu_window(hwnd: HWND) -> bool {
+pub fn is_start_menu_open() -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
     unsafe {
-        if hwnd.0.is_null() {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
             return false;
         }
         let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        GetWindowThreadProcessId(fg, Some(&mut pid));
         if pid == 0 {
             return false;
         }
@@ -640,44 +635,28 @@ pub fn is_start_menu_window(hwnd: HWND) -> bool {
 /// deterministic. The tiny debounce only coalesces duplicate events; it must
 /// stay well below the double-click interval so a double-click still closes.
 ///
-/// Start also closes itself on the mouse-down of a click outside it, the
-/// Start button included, so by the time the click arrives the menu is often
-/// already gone. A click within START_DISMISS_GRACE_MS of Start closing is
-/// the one that closed it, and must not open it again.
+/// Start also closes itself on the press of a click outside it, the Start
+/// button included, so by the time the click arrives the menu is often gone.
+/// The mouse hook records whether Start was open at this click's press: if it
+/// was, the press closed it and the click leaves it closed, however long the
+/// button was held.
 fn toggle_start_menu() {
     let now = get_now_ms();
     if now - LAST_START_TOGGLE_MS.load(Ordering::Relaxed) < START_TOGGLE_DEBOUNCE_MS {
         return;
     }
     LAST_START_TOGGLE_MS.store(now, Ordering::Relaxed);
+    // Taken here, so a press is only ever used by the click it started.
+    let open_at_press = START_OPEN_AT_PRESS.swap(false, Ordering::Relaxed);
 
     tauri::async_runtime::spawn_blocking(move || {
         use windows::Win32::UI::Input::KeyboardAndMouse::{VK_ESCAPE, VK_LWIN};
         if is_start_menu_open() {
             send_key_tap(VK_ESCAPE, 0);
-            return;
-        }
-        // Still marked foreground: Start closed so recently that the
-        // foreground hook hasn't seen it yet. Clear the mark so a stale one
-        // can never swallow more than this click.
-        let just_closed = START_MENU_FOREGROUND.swap(false, Ordering::Relaxed)
-            || get_now_ms() - LAST_START_CLOSED_MS.load(Ordering::Relaxed) < START_DISMISS_GRACE_MS;
-        if !just_closed {
+        } else if !open_at_press {
             send_key_tap(VK_LWIN, START_WIN_KEY_HOLD_MS);
         }
     });
-}
-
-/// Longer than a slow click's press, shorter than a deliberate reopen.
-const START_DISMISS_GRACE_MS: i64 = 500;
-
-/// Called for every foreground change: remembers when Start lost the
-/// foreground, so a click that dismissed it doesn't reopen it.
-pub fn note_foreground_for_start(hwnd: HWND) {
-    let is_start = is_start_menu_window(hwnd);
-    if START_MENU_FOREGROUND.swap(is_start, Ordering::Relaxed) && !is_start {
-        LAST_START_CLOSED_MS.store(get_now_ms(), Ordering::Relaxed);
-    }
 }
 
 #[tauri::command]

@@ -15,7 +15,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetWindowLongW, GetWindowThreadProcessId, IsWindowVisible, SetWindowsHookExW,
-    GWL_EXSTYLE, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_MOUSEMOVE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MOUSEMOVE, WS_EX_APPWINDOW,
+    WS_EX_TOOLWINDOW,
 };
 use wmi::{COMLibrary, WMIConnection};
 
@@ -436,9 +437,6 @@ unsafe extern "system" fn focus_event_proc(
     _event_thread: u32,
     _ms_event_time: u32,
 ) {
-    // Before any filtering: Start closing can hand the foreground to anything,
-    // including no window or a tool window.
-    crate::commands::note_foreground_for_start(hwnd);
     if hwnd.0.is_null() {
         return;
     }
@@ -2898,6 +2896,13 @@ unsafe extern "system" fn mouse_hook_proc(
         let cursor = (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt;
         queue_cursor(cursor);
         MOUSE_HOOK_LAST_EVENT_MS.store(hook_tick_ms(), Ordering::Relaxed);
+    }
+    // Start closes itself on the press of a click outside it, the dock's
+    // Start button included, before that click reaches Bloom. The hook sees
+    // the press first, so it records whether Start was open for the click to
+    // use. A cheap foreground check, and only on presses.
+    if code >= 0 && wparam.0 == WM_LBUTTONDOWN as usize {
+        START_OPEN_AT_PRESS.store(crate::commands::is_start_menu_open(), Ordering::Relaxed);
     }
     CallNextHookEx(None, code, wparam, lparam)
 }
