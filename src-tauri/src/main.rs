@@ -14,6 +14,7 @@ mod types;
 mod updater;
 mod utils;
 mod wifi;
+mod window_region;
 
 use std::sync::atomic::Ordering;
 use tauri::Manager;
@@ -136,6 +137,7 @@ fn main() {
             launch_new_instance,
             update_dock_rect,
             update_notch_rect,
+            window_region::set_window_region,
             set_dock_hovered,
             set_notch_hovered,
             set_notch_visible,
@@ -240,7 +242,19 @@ fn main() {
             }
 
             let window = app.get_webview_window("main").unwrap();
+            // tao rebuilds the extended style from its own flags whenever one
+            // changes (show, hide, ...). With its ignore-cursor flag on, every
+            // rebuild keeps the notch window layered, which its window region
+            // needs to stay transparent; set_click_through then drives the
+            // click-through bit directly. The worst a rebuild does is make the
+            // window click-through until the next cursor update.
+            let _ = window.set_ignore_cursor_events(true);
             let dock_win = app.get_webview_window("dock").unwrap();
+            // Same for the dock window, which has a region too.
+            let _ = dock_win.set_ignore_cursor_events(true);
+            if let Ok(hwnd) = dock_win.hwnd() {
+                DOCK_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+            }
 
             // Sync window rects initially and on event
             let win_clone = window.clone();
@@ -324,6 +338,9 @@ fn main() {
             // take effect on a window that has never been shown. Show it once
             // to register it with the compositor, then hide immediately.
             if let Some(ov_win) = app.get_webview_window("overlay") {
+                // Layered from the start, like the notch and dock (see
+                // set_click_through): the overlay has a window region too.
+                let _ = ov_win.set_ignore_cursor_events(true);
                 let _ = ov_win.show();
                 let _ = ov_win.hide();
                 let overlay_handle = app.handle().clone();

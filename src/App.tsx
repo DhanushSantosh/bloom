@@ -1,11 +1,17 @@
 import { motion, AnimatePresence, useAnimation } from "framer-motion";
-import { useEffect, useLayoutEffect, useState, useCallback, useRef, memo } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getVersion } from "@tauri-apps/api/app";
 import type { UpdateCheckResult } from "./updater";
 import { batteryTooltip, type BatteryDetails } from "./batteryTooltip";
+import {
+	createRegionSender,
+	measureElements,
+	notchPillBox,
+	type RegionRect
+} from "./windowRegion";
 import "./App.css";
 import { initTheme } from "./theme";
 import {
@@ -704,6 +710,35 @@ function App() {
 	const musicBubbleRef = useRef<HTMLButtonElement>(null);
 	const shelfBubbleRef = useRef<HTMLButtonElement>(null);
 	const reportNotchRect = useRef<() => void>(() => {});
+	// The pill's target box in window CSS px, and the sender that applies the
+	// notch window's region (holding earlier regions while it shrinks).
+	const pillTargetRef = useRef<RegionRect | null>(null);
+	const sendNotchRegion = useMemo(
+		() =>
+			createRegionSender((rects) => {
+				invoke("set_window_region", { rects }).catch(() => {});
+			}),
+		[]
+	);
+
+	// Recomputes the notch window's region from the pill's target box and the
+	// floating parts drawn around it, and sends it if it changed. Reads only
+	// refs and the DOM, so it is safe to call from any callback.
+	const updateNotchRegion = () => {
+		const wanted: RegionRect[] = [];
+		if (pillTargetRef.current) wanted.push(pillTargetRef.current);
+		// Each floating part, padded to cover what it paints outside its box: a
+		// tooltip card's shadow reaches 20px out plus a 6px drop, a bubble's
+		// glow less, and the screen corners nothing.
+		wanted.push(
+			...measureElements([
+				[".activity-bubble", 16],
+				[".status-tooltip", 28],
+				[".screen-corner", 0]
+			])
+		);
+		sendNotchRegion(wanted);
+	};
 	const [systemSettingsReady, setSystemSettingsReady] = useState(false);
 	const [waitForStartupSplash, setWaitForStartupSplash] = useState(false);
 	const initialSystemSyncDone = useRef(false);
@@ -762,6 +797,8 @@ function App() {
 						height: Math.round(bottom - top)
 					}
 				}).catch(() => {});
+				// Bubbles finishing their entrance land here too.
+				updateNotchRegion();
 			}
 		};
 		reportNotchRect.current = updateRect;
@@ -2744,6 +2781,35 @@ function App() {
 		}
 	}, [isHovered, mediaLayout, bloomMode]);
 
+	// The pill's target geometry: the animation springs toward it, and the
+	// window region below is cut from it, so the region is already at the
+	// final size while the pill animates.
+	const pillTargetY = !isReady ? 250 : isVisible ? (isHidden ? -100 : 0) : -150;
+	const pillTargetWidth = !isReady
+		? 34
+		: isExpanded && isVisible && !isHidden
+			? getDynamicWidth()
+			: isImpacted
+				? 39.1
+				: 30.6;
+	const pillTargetHeight = !isReady ? 34 : getDynamicHeight();
+	// Shadow and the edge flares beside the pill.
+	pillTargetRef.current = notchPillBox(
+		window.innerWidth,
+		scale,
+		pillTargetY,
+		pillTargetWidth,
+		pillTargetHeight,
+		24
+	);
+
+	// Clip the notch window to what it draws (see window_region.rs): outside
+	// these rectangles the window takes no clicks, whatever its click-through
+	// state. Sent after every render, but only when the region changes.
+	useEffect(() => {
+		if (windowLabel === "main") updateNotchRegion();
+	});
+
 	return (
 		<div className="screen" style={{ overflow: "hidden" }}>
 			{/* Screen Corners (Top) */}
@@ -2794,15 +2860,9 @@ function App() {
 						opacity: 0
 					}}
 					animate={{
-						y: !isReady ? 250 : isVisible ? (isHidden ? -100 : 0) : -150,
-						width: !isReady
-							? 34
-							: isExpanded && isVisible && !isHidden
-								? getDynamicWidth()
-								: isImpacted
-									? 39.1
-									: 30.6,
-						height: !isReady ? 34 : getDynamicHeight(),
+						y: pillTargetY,
+						width: pillTargetWidth,
+						height: pillTargetHeight,
 						opacity: isVisible ? 1 : 0,
 						scaleX: 1,
 						scaleY: 1,
