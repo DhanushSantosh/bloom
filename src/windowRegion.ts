@@ -60,6 +60,27 @@ export function notchPillBox(
 }
 
 /**
+ * Calls `callback` whenever the window's device pixel ratio (the display
+ * scale) changes. Returns a function that stops listening.
+ */
+export function onPixelRatioChange(callback: () => void): () => void {
+	let query: MediaQueryList | null = null;
+	const changed = () => {
+		watch();
+		callback();
+	};
+	// A resolution query only matches the ratio it was made for, so each
+	// change re-arms it for the new one.
+	const watch = () => {
+		query?.removeEventListener("change", changed);
+		query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+		query.addEventListener("change", changed);
+	};
+	watch();
+	return () => query?.removeEventListener("change", changed);
+}
+
+/**
  * Boxes for elements matching each selector, padded per selector for the
  * shadow or glow they paint outside themselves.
  */
@@ -75,7 +96,8 @@ export function measureElements(selectors: [string, number][]): RegionRect[] {
 /**
  * Feeds the rectangles a window needs into `nextRegion` and calls `send` with
  * the region whenever it changes, recomputing on its own when a held region
- * expires. Rectangles are clipped to the window first.
+ * expires or the display scale changes. Rectangles are clipped to the window
+ * first. Meant to live as long as its window.
  */
 export function createRegionSender(send: (rects: RegionRect[]) => void, holdMs = 700) {
 	let state: RegionState = { key: "", current: [], held: [] };
@@ -86,7 +108,7 @@ export function createRegionSender(send: (rects: RegionRect[]) => void, holdMs =
 		const current = wanted
 			.map((r) => clipToWindow(r, window.innerWidth, window.innerHeight))
 			.filter((r): r is RegionRect => r !== null);
-		const next = nextRegion(state, current, performance.now(), holdMs);
+		const next = nextRegion(state, current, performance.now(), holdMs, window.devicePixelRatio);
 		state = next.state;
 		if (next.changed) send(next.rects);
 		if (timer) clearTimeout(timer);
@@ -95,6 +117,7 @@ export function createRegionSender(send: (rects: RegionRect[]) => void, holdMs =
 				? null
 				: setTimeout(() => update(latest), next.nextExpiry - performance.now() + 5);
 	};
+	onPixelRatioChange(() => update(latest));
 	return update;
 }
 
@@ -107,13 +130,16 @@ function regionKey(rects: RegionRect[]): string {
  * grows takes effect at once; when it shrinks, the previous rectangles are
  * held for `holdMs` so an animation leaving them isn't clipped. `changed` says
  * whether the region to send differs from the last one, and `nextExpiry` when
- * a held region runs out and the region should be recomputed.
+ * a held region runs out and the region should be recomputed. The backend
+ * turns the rectangles into physical pixels, so a change of `pixelRatio`
+ * (the display scale) also counts as a change.
  */
 export function nextRegion(
 	state: RegionState,
 	current: RegionRect[],
 	now: number,
-	holdMs: number
+	holdMs: number,
+	pixelRatio = 1
 ): { state: RegionState; rects: RegionRect[]; changed: boolean; nextExpiry: number | null } {
 	let held = state.held;
 	if (state.current.length > 0 && regionKey(current) !== regionKey(state.current)) {
@@ -121,7 +147,7 @@ export function nextRegion(
 	}
 	held = held.filter((h) => h.until > now);
 	const rects = [...current, ...held.flatMap((h) => h.rects)];
-	const key = regionKey(rects);
+	const key = `${pixelRatio}|${regionKey(rects)}`;
 	const nextExpiry = held.length > 0 ? Math.min(...held.map((h) => h.until)) : null;
 	return {
 		state: { key, current, held },

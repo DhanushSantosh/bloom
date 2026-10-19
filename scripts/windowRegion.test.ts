@@ -72,18 +72,37 @@ describe("window region", () => {
 	});
 
 	test("the sender clips to the window and sends only changes", () => {
-		(globalThis as { window?: unknown }).window = { innerWidth: 1000, innerHeight: 500 };
+		// The display scale's media query, fired by hand below.
+		let scaleChanged = () => {};
+		const fakeWindow = {
+			innerWidth: 1000,
+			innerHeight: 500,
+			devicePixelRatio: 1,
+			matchMedia: () => ({
+				addEventListener: (_: string, listener: () => void) => {
+					scaleChanged = listener;
+				},
+				removeEventListener: () => {}
+			})
+		};
+		(globalThis as { window?: unknown }).window = fakeWindow;
 		const sent: unknown[] = [];
 		const send = createRegionSender((rects) => sent.push(rects), 700);
 		const band = { x: 0, y: 400, width: 1000, height: 150 };
 		send([band]);
 		// Clipped to the 500px-tall window.
-		expect(sent).toEqual([[{ x: 0, y: 400, width: 1000, height: 100 }]]);
+		const clipped = [{ x: 0, y: 400, width: 1000, height: 100 }];
+		expect(sent).toEqual([clipped]);
 		send([band]);
 		expect(sent.length).toBe(1);
 		// Off-window rectangles drop out; the region doesn't change.
 		send([band, { x: 0, y: 600, width: 10, height: 10 }]);
 		expect(sent.length).toBe(1);
+		// A display scale change re-sends the same CSS rectangles by itself, so
+		// the backend can convert them at the new scale.
+		fakeWindow.devicePixelRatio = 1.5;
+		scaleChanged();
+		expect(sent).toEqual([clipped, clipped]);
 	});
 
 	test("reports no change when nothing moved", () => {
@@ -91,5 +110,13 @@ describe("window region", () => {
 		const a = nextRegion(empty, rects, 0, 700);
 		const b = nextRegion(a.state, rects, 50, 700);
 		expect(b.changed).toBe(false);
+	});
+
+	test("reports a change when only the display scale changed", () => {
+		const rects = [{ x: 1, y: 2, width: 3, height: 4 }];
+		const a = nextRegion(empty, rects, 0, 700, 1);
+		const b = nextRegion(a.state, rects, 50, 700, 1.5);
+		expect(b.changed).toBe(true);
+		expect(b.rects).toEqual(rects);
 	});
 });
