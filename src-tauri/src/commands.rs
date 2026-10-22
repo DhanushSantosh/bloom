@@ -1926,12 +1926,46 @@ pub fn save_pinned_apps(app: AppHandle, apps: Vec<AppInfo>) -> Result<(), String
     Ok(())
 }
 
+/// The installed web app a pin saved as its browser stands for: one whose
+/// shell id is a browser web app (`Chrome._crx_<id>`) and whose name is the
+/// pin's. A pin of the browser itself keeps its path.
+fn web_app_id_for_pin(path: &str, name: &str, installed: &[AppInfo]) -> Option<String> {
+    let exe = std::path::Path::new(path)
+        .file_name()?
+        .to_str()?
+        .to_ascii_lowercase();
+    if !matches!(
+        exe.as_str(),
+        "chrome.exe" | "msedge.exe" | "brave.exe" | "vivaldi.exe"
+    ) {
+        return None;
+    }
+    installed
+        .iter()
+        .find(|app| {
+            app.name.eq_ignore_ascii_case(name)
+                && app.path.to_ascii_lowercase().contains("_crx_")
+                && !app.path.contains('\\')
+        })
+        .map(|app| app.path.clone())
+}
+
 /// Apps pinned while running were saved under their executable's name
 /// ("WhatsApp.Root", "localsend_app"). Gives those their Start menu name, once
 /// the installed-apps scan has results: the dock loads its pins again when the
 /// scan emits `installed-apps-updated`, then saves the corrected list. Names
 /// that differ from the file name are kept as they are.
 fn refresh_pinned_names(mut apps: Vec<AppInfo>) -> Vec<AppInfo> {
+    // A web app pinned from its running window was saved as its browser
+    // (chrome.exe), so it launched the browser and showed its icon; it gets
+    // the installed web app's id instead.
+    if let Some(installed) = INSTALLED_APPS_CACHE.get().and_then(|c| c.lock().ok()) {
+        for app in &mut apps {
+            if let Some(id) = web_app_id_for_pin(&app.path, &app.name, &installed) {
+                app.path = id;
+            }
+        }
+    }
     for app in &mut apps {
         let stem = std::path::Path::new(&app.path)
             .file_stem()
@@ -1954,11 +1988,24 @@ pub async fn load_pinned_apps(app: AppHandle) -> Vec<AppInfo> {
         .app_config_dir()
         .unwrap_or_default()
         .join("pinned_apps.json");
-    if let Ok(content) = std::fs::read_to_string(path) {
+    if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(apps) = serde_json::from_str::<Vec<AppInfo>>(&content) {
-            return tauri::async_runtime::spawn_blocking(move || refresh_pinned_names(apps))
-                .await
-                .unwrap_or_default();
+            return tauri::async_runtime::spawn_blocking(move || {
+                let before: Vec<String> = apps.iter().map(|a| a.path.clone()).collect();
+                let apps = refresh_pinned_names(apps);
+                // A repaired pin (a web app saved as its browser) is saved
+                // right away; the dock only saves its pins when they change.
+                if apps.iter().map(|a| &a.path).ne(before.iter()) {
+                    if let (Ok(_guard), Ok(json)) =
+                        (PINNED_FILE_LOCK.lock(), serde_json::to_string(&apps))
+                    {
+                        let _ = crate::utils::atomic_write_file(&path, json.as_bytes());
+                    }
+                }
+                apps
+            })
+            .await
+            .unwrap_or_default();
         }
     }
     vec![
@@ -4128,6 +4175,45 @@ mod restore_rect_tests {
 #[cfg(test)]
 mod pwa_icon_tests {
     use super::*;
+
+    fn app(name: &str, path: &str) -> AppInfo {
+        AppInfo {
+            name: name.into(),
+            path: path.into(),
+            icon: None,
+            is_running: false,
+            hwnd: None,
+            executable: None,
+            all_hwnds: None,
+        }
+    }
+
+    #[test]
+    fn repairs_web_apps_pinned_as_their_browser() {
+        let installed = [
+            app("Google Chrome", "Chrome"),
+            app("Netflix", "Chrome._crx_eppojlglocmnohnlnionkobfln"),
+            app(
+                "Netflix",
+                r"C:\Users\x\Start Menu\Programs\Chrome Apps\Netflix.lnk",
+            ),
+        ];
+        let chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+        assert_eq!(
+            web_app_id_for_pin(chrome, "Netflix", &installed).as_deref(),
+            Some("Chrome._crx_eppojlglocmnohnlnionkobfln")
+        );
+        // Chrome itself, a name with no web app, and apps that aren't browsers stay.
+        assert_eq!(
+            web_app_id_for_pin(chrome, "Google Chrome", &installed),
+            None
+        );
+        assert_eq!(web_app_id_for_pin(chrome, "YouTube", &installed), None);
+        assert_eq!(
+            web_app_id_for_pin(r"C:\Apps\Netflix.exe", "Netflix", &installed),
+            None
+        );
+    }
 
     #[test]
     fn bloom_launch_targets_reuse_the_running_settings_window() {
