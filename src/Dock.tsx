@@ -9,7 +9,9 @@ import { useSettingsSync } from "./hooks/useSettingsSync";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 
 import {
+	canMatchByProgram,
 	isSameWebApp,
+	isWebAppId,
 	matchesPackagedExecutable,
 	mergeTrayApps,
 	pinnableApp,
@@ -978,11 +980,23 @@ const Dock = memo(function Dock() {
 				return running;
 			}
 
+			// A web app pinned by its id is running only as a window with its name.
+			if (isWebAppId(p.path)) {
+				const found = activeApps.find(
+					(a) => !matchedRunningKeys.has(itemKey(a)) && isSameWebApp(p, a)
+				);
+				if (found) matchedRunningKeys.add(itemKey(found));
+				return found;
+			}
+
 			// 3. Try fallback match by executable name if defined
 			if (p.executable) {
 				const targetExe = p.executable.toLowerCase();
 				const found = activeApps.find(
-					(a) => !isIdentifier(a.path) && a.executable?.toLowerCase() === targetExe
+					(a) =>
+						!isIdentifier(a.path) &&
+						a.executable?.toLowerCase() === targetExe &&
+						canMatchByProgram(p, a)
 				);
 				if (found) {
 					matchedRunningKeys.add(appIdentity(found.path, found.executable, found.name));
@@ -994,7 +1008,7 @@ const Dock = memo(function Dock() {
 			const pinFilename = p.path.split("/").pop()?.split("\\").pop()?.toLowerCase() || "";
 			if (pinFilename) {
 				const found = activeApps.find((a) => {
-					if (isIdentifier(a.path)) return false;
+					if (isIdentifier(a.path) || !canMatchByProgram(p, a)) return false;
 					const runExe =
 						a.executable?.toLowerCase() ||
 						a.path.split("/").pop()?.split("\\").pop()?.toLowerCase() ||
