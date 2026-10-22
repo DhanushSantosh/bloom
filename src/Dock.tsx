@@ -8,7 +8,14 @@ import { initTheme } from "./theme";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 
-import { mergeTrayApps, selectDockTrayApps, type AppInfo, type TrayApp } from "./dockApps";
+import {
+	isSameWebApp,
+	mergeTrayApps,
+	pinnableApp,
+	selectDockTrayApps,
+	type AppInfo,
+	type TrayApp
+} from "./dockApps";
 import { driveLetter, hideDrive, removeCustomFolder, type DockExtra } from "./dockExtras";
 import { createRegionSender, measureElements, padRect, type RegionRect } from "./windowRegion";
 
@@ -65,6 +72,8 @@ function sameRunningApps(left: AppInfo[], right: AppInfo[]): boolean {
 export function isSameApp(a: AppInfo, b: AppInfo): boolean {
 	if (!a.path || !b.path) return false;
 	if (itemKey(a) === itemKey(b)) return true;
+	// A web app pinned by its id and its running window (its browser's process).
+	if (isSameWebApp(a, b)) return true;
 	// Browser hosts run many apps under one exe — only the full identity
 	// (which folds in the window/AUMID name) can match those.
 	if (isBrowserHost(a.path) || isBrowserHost(b.path)) return false;
@@ -403,15 +412,21 @@ const Dock = memo(function Dock() {
 		init();
 
 		// The installed-apps scan finishes after the first load; pins saved under
-		// their executable's name then get their Start menu name.
+		// their executable's name then get their Start menu name, and web apps
+		// pinned as their browser get the web app's id.
 		const unlistenInstalledApps = listen("installed-apps-updated", async () => {
 			try {
 				const refreshed = await invoke<AppInfo[]>("load_pinned_apps");
-				const names = new Map(refreshed.map((a) => [a.path, a.name]));
 				setPinnedApps((prev) => {
-					const next = prev.map((a) => ({ ...a, name: names.get(a.path) ?? a.name }));
-					if (!next.some((a, i) => a.name !== prev[i].name)) return prev;
-					// Pins are otherwise saved only when they change; keep the names.
+					// The backend keeps the pins' order; anything else means they
+					// changed meanwhile, and the refresh is stale.
+					if (refreshed.length !== prev.length) return prev;
+					const next = prev.map((a, i) => ({ ...a, name: refreshed[i].name, path: refreshed[i].path }));
+					if (!next.some((a, i) => a.name !== prev[i].name || a.path !== prev[i].path)) return prev;
+					next.forEach((a, i) => {
+						if (a.path !== prev[i].path) fetchIcon(a.path, a.name);
+					});
+					// Pins are otherwise saved only when they change; keep the corrections.
 					queueMicrotask(() => {
 						invoke("save_pinned_apps", { apps: next }).catch(console.error);
 					});
@@ -709,8 +724,11 @@ const Dock = memo(function Dock() {
 			// Fuzzy guard: the same app pinned via another entry shape (running
 			// window vs installed shortcut) must never create a duplicate.
 			if (pinnedApps.some((a) => isSameApp(a, app))) return;
-			newPinned = [...pinnedApps, { ...app, is_pinned: true, is_running: false, hwnd: undefined }];
-			fetchIcon(app.path, app.name);
+			// A running web app is its browser's process; pin the web app itself.
+			const installed = await invoke<AppInfo[]>("get_installed_apps").catch(() => []);
+			const pin = pinnableApp(app, installed);
+			newPinned = [...pinnedApps, { ...pin, is_pinned: true, is_running: false, hwnd: undefined }];
+			fetchIcon(pin.path, pin.name);
 		}
 		setPinnedApps(newPinned);
 		await invoke("save_pinned_apps", { apps: newPinned });
