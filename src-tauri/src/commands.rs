@@ -1448,6 +1448,15 @@ unsafe fn pwa_icon_for_window(hwnd: HWND, process_path: &str) -> Option<String> 
                     }
                 }
             }
+            // Chrome shortens the app id in a window's AppUserModelID
+            // ("Chrome._crx_eppojlglocmnohnlnionkobfln" for Netflix), so it can't
+            // name the profile folder. The browser registers the app under that
+            // same id in Start, though, and the shell has its icon.
+            if id.contains("_crx_") {
+                if let Some(icon) = icon_from_aumid(&id) {
+                    return Some(icon);
+                }
+            }
             if let Some(command_line) = process_command_line(pid) {
                 if let Some(icon) = pwa_icon_from_command_line(process_path, &command_line) {
                     return Some(icon);
@@ -1835,6 +1844,10 @@ pub async fn get_app_icon(
             // A shortcut can carry its own icon file (Firefox web apps, user edits).
             let mut icon_data = if is_lnk {
                 get_shortcut_icon_location(&path_clone).and_then(|p| image_file_to_base64(&p))
+            } else if path_clone.to_lowercase().ends_with(".url") {
+                // A web app installed as an Internet shortcut names its icon file.
+                crate::utils::url_shortcut_icon_file(&path_clone)
+                    .and_then(|p| image_file_to_base64(&p))
             } else {
                 None
             };
