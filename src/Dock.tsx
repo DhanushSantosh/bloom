@@ -12,6 +12,7 @@ import {
 	canMatchByProgram,
 	isSameWebApp,
 	isWebAppId,
+	matchesPackagedExecutable,
 	mergeTrayApps,
 	pinnableApp,
 	selectDockTrayApps,
@@ -74,6 +75,7 @@ function sameRunningApps(left: AppInfo[], right: AppInfo[]): boolean {
 export function isSameApp(a: AppInfo, b: AppInfo): boolean {
 	if (!a.path || !b.path) return false;
 	if (itemKey(a) === itemKey(b)) return true;
+	if (matchesPackagedExecutable(a, b)) return true;
 	// A web app pinned by its id and its running window (its browser's process).
 	if (isSameWebApp(a, b)) return true;
 	// Browser hosts run many apps under one exe — only the full identity
@@ -756,6 +758,19 @@ const Dock = memo(function Dock() {
 		closeMenu();
 		setPreviewData(null);
 		try {
+			// DOCK_RECT can still include the preview's padded hit area until
+			// the next render. Publish the actual bar before placing its menu.
+			const bar = dockRef.current?.getBoundingClientRect();
+			if (bar) {
+				await invoke("update_dock_rect", {
+					rect: {
+						x: Math.round(bar.x),
+						y: Math.round(bar.y),
+						width: Math.round(bar.width),
+						height: Math.round(bar.height)
+					}
+				});
+			}
 			await invoke("show_tray_context_menu", { trayId });
 		} catch (error) {
 			showActionError(error);
