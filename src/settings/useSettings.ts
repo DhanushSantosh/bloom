@@ -31,6 +31,9 @@ export function useSettings() {
 	const [saveError, setSaveError] = useState(
 		() => sessionStorage.getItem("bloom-settings-save-error") !== null
 	);
+	const [saveErrorDetail, setSaveErrorDetail] = useState(
+		() => sessionStorage.getItem("bloom-settings-save-error-detail") || ""
+	);
 	const saveQueue = useRef<Promise<void>>(Promise.resolve());
 	const saveFailed = useRef(false);
 	const [autostart, setAutostart] = useState(false);
@@ -279,6 +282,8 @@ export function useSettings() {
 				console.error(`Failed to save ${key}:`, error);
 				saveFailed.current = true;
 				sessionStorage.setItem("bloom-settings-save-error", "true");
+				sessionStorage.setItem("bloom-settings-save-error-detail", String(error));
+				setSaveErrorDetail(String(error));
 				setSaveError(true);
 				window.setTimeout(() => window.location.reload(), 0);
 				return false;
@@ -287,6 +292,7 @@ export function useSettings() {
 				if (value === null) localStorage.removeItem(key);
 				else localStorage.setItem(key, value);
 				sessionStorage.removeItem("bloom-settings-save-error");
+				sessionStorage.removeItem("bloom-settings-save-error-detail");
 			} catch (error) {
 				// The file is saved; a mirror failure must not be reported as a failed write.
 				console.warn("Settings mirror update failed:", error);
@@ -309,6 +315,8 @@ export function useSettings() {
 				console.error(`Failed to save ${key}:`, error);
 				saveFailed.current = true;
 				sessionStorage.setItem("bloom-settings-save-error", "true");
+				sessionStorage.setItem("bloom-settings-save-error-detail", String(error));
+				setSaveErrorDetail(String(error));
 				setSaveError(true);
 				window.setTimeout(() => window.location.reload(), 0);
 				return false;
@@ -316,6 +324,7 @@ export function useSettings() {
 			try {
 				localStorage.removeItem(key);
 				sessionStorage.removeItem("bloom-settings-save-error");
+				sessionStorage.removeItem("bloom-settings-save-error-detail");
 			} catch (error) {
 				console.warn("Settings mirror cleanup failed:", error);
 			}
@@ -328,6 +337,8 @@ export function useSettings() {
 
 	const dismissSaveError = () => {
 		sessionStorage.removeItem("bloom-settings-save-error");
+		sessionStorage.removeItem("bloom-settings-save-error-detail");
+		setSaveErrorDetail("");
 		setSaveError(false);
 	};
 
@@ -948,6 +959,7 @@ export function useSettings() {
 
 	return {
 		saveError,
+		saveErrorDetail,
 		dismissSaveError,
 		// System
 		autostart,
