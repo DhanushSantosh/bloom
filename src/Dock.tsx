@@ -7,11 +7,13 @@ import { EdgeSurface } from "./components/EdgeSurface";
 import { initTheme } from "./theme";
 import { useSettingsSync } from "./hooks/useSettingsSync";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
+import { dockOverlapSpan } from "./dockGeometry";
 
 import {
 	canMatchByProgram,
 	isSameWebApp,
 	isWebAppId,
+	dockIconKey,
 	matchesPackagedExecutable,
 	mergeTrayApps,
 	pinnableApp,
@@ -171,6 +173,8 @@ const Dock = memo(function Dock() {
 	const [pinnedApps, setPinnedApps] = useState<AppInfo[]>([]);
 	const [activeApps, setActiveApps] = useState<AppInfo[]>([]);
 	const iconsRef = useRef<Record<string, string>>({});
+	const pendingIconsRef = useRef(new Set<string>());
+	const iconGenerationRef = useRef(0);
 	const [, setIconsTick] = useState(0);
 	const [dockMode, setDockMode] = useState(() => {
 		const raw = localStorage.getItem("bloom-dock-mode") || "smart";
@@ -337,13 +341,26 @@ const Dock = memo(function Dock() {
 			if (dockRef.current) {
 				const rect = dockRef.current.getBoundingClientRect();
 				const hasPreview = !!previewData;
+				const content = dockRef.current.querySelector<HTMLElement>(".dock-reorder-container");
+				const style = getComputedStyle(dockRef.current);
+				const overlap = content
+					? dockOverlapSpan(
+							window.innerWidth,
+							content.scrollWidth,
+							parseFloat(style.paddingLeft) + parseFloat(style.paddingRight),
+							scale
+						)
+					: null;
 				invoke("update_dock_rect", {
 					rect: {
 						x: Math.round(rect.x) - (hasPreview ? 500 : 0),
 						y: Math.round(rect.y) - (hasPreview ? 320 : 0),
 						width: Math.round(rect.width) + (hasPreview ? 1000 : 0),
 						height: Math.round(rect.height) + (hasPreview ? 320 : 0)
-					}
+					},
+					overlapRect: overlap
+						? { ...overlap, y: Math.round(rect.y), height: Math.round(rect.height) }
+						: null
 				}).catch(() => {});
 			}
 		};
@@ -352,12 +369,14 @@ const Dock = memo(function Dock() {
 		window.addEventListener("resize", updateRect);
 		const observer = new ResizeObserver(updateRect);
 		if (dockRef.current) observer.observe(dockRef.current);
+		const content = dockRef.current?.querySelector(".dock-reorder-container");
+		if (content) observer.observe(content);
 
 		return () => {
 			window.removeEventListener("resize", updateRect);
 			observer.disconnect();
 		};
-	}, [pinnedApps, activeApps, isHidden, previewData, scale]);
+	}, [pinnedApps, activeApps, isHidden, isExpanded, previewData, scale]);
 
 	useEffect(() => {
 		const init = async () => {
@@ -401,7 +420,7 @@ const Dock = memo(function Dock() {
 
 			const pinned = await invoke<AppInfo[]>("load_pinned_apps");
 			setPinnedApps(pinned.map((a) => ({ ...a, is_pinned: true })));
-			pinned.forEach((app) => fetchIcon(app.path));
+			pinned.forEach((app) => fetchIcon(app.path, app.name));
 
 			// Warm the installed-apps cache in the background so the add-app
 			// popup opens with data ready instead of waiting on the scan.
@@ -555,6 +574,7 @@ const Dock = memo(function Dock() {
 					: next;
 			});
 
+			pinnedApps.forEach((app) => fetchIcon(app.path, app.name));
 			running.forEach((app) => fetchIcon(app.path, app.name, app.hwnd));
 		};
 
@@ -574,39 +594,42 @@ const Dock = memo(function Dock() {
 		};
 	}, [isDragging, pinnedApps]);
 
-	const fetchIcon = async (path: string, name?: string, hwnd?: number, retryCount = 0) => {
+	const fetchIcon = async (path: string, name?: string, hwnd?: number) => {
 		const isHost = isBrowserHost(path);
 		const cacheKey =
 			isHost && name ? `${path}:${name.toLowerCase()}` : hwnd ? `${path}-${hwnd}` : path;
 
-		if (iconsRef.current[cacheKey]) return;
+		if (iconsRef.current[cacheKey] || pendingIconsRef.current.has(cacheKey)) return;
+		pendingIconsRef.current.add(cacheKey);
+		const generation = iconGenerationRef.current;
 		try {
 			const icon = await invoke<string | null>("get_app_icon", {
 				path,
 				name: name || null,
 				hwnd: hwnd || null
 			});
-			if (icon) {
+			if (icon && generation === iconGenerationRef.current) {
 				iconsRef.current[cacheKey] = icon;
 				if (!isHost) iconsRef.current[path] = icon;
 				setIconsTick((t) => t + 1);
-			} else if (retryCount < 3 && !hwnd) {
-				setTimeout(() => fetchIcon(path, name, undefined, retryCount + 1), 3000 * (retryCount + 1));
 			}
 		} catch (e) {
 			console.error(`Failed to fetch icon for ${path}:`, e);
-			if (retryCount < 3 && !hwnd) {
-				setTimeout(() => fetchIcon(path, name, undefined, retryCount + 1), 3000 * (retryCount + 1));
-			}
+		} finally {
+			// Window changes and the existing poll retry missing icons. Only an
+			// actual in-flight request is excluded; no timer can retain a stale HWND.
+			if (generation === iconGenerationRef.current) pendingIconsRef.current.delete(cacheKey);
 		}
 	};
 
 	const handleClearIconCache = async () => {
 		try {
 			await invoke("clear_icon_cache");
+			iconGenerationRef.current += 1;
+			pendingIconsRef.current.clear();
 			iconsRef.current = {};
 			setIconsTick((t) => t + 1);
-			pinnedApps.forEach((app) => fetchIcon(app.path));
+			pinnedApps.forEach((app) => fetchIcon(app.path, app.name));
 		} catch (e) {
 			console.error("Failed to clear icon cache:", e);
 		}
@@ -1056,9 +1079,14 @@ const Dock = memo(function Dock() {
 			},
 			...pinnedApps.map((p) => {
 				const running = findRunningApp(p);
+				// A web app keeps its own icon: its window's identity is the
+				// browser's, which would mix the two up.
+				const liveIcon = running && !isWebAppId(p.path) ? running : undefined;
 				return {
 					...p,
 					is_running: !!running,
+					icon_path: liveIcon?.path,
+					icon_name: liveIcon?.name,
 					hwnd: running?.hwnd,
 					all_hwnds: running?.all_hwnds,
 					tray_ids: running?.tray_ids,
@@ -1556,6 +1584,7 @@ const Dock = memo(function Dock() {
 														const icon =
 															customIcons[cacheKey] ||
 															(allowPathFallback && customIcons[app.path]) ||
+															iconsRef.current[dockIconKey(app, isHost)] ||
 															iconsRef.current[cacheKey] ||
 															(allowPathFallback && iconsRef.current[app.path]) ||
 															app.icon;
@@ -1715,6 +1744,7 @@ const Dock = memo(function Dock() {
 												const icon =
 													customIcons[cacheKey] ||
 													(allowPathFallback && customIcons[app.path]) ||
+													iconsRef.current[dockIconKey(app, isHost)] ||
 													iconsRef.current[cacheKey] ||
 													(allowPathFallback && iconsRef.current[app.path]) ||
 													app.icon;

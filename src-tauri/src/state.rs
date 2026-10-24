@@ -22,6 +22,8 @@ pub static TRAY_INTERACTION_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 pub static DOCK_RECT: Mutex<Option<IntRect>> = Mutex::new(None);
+/// Expanded bar geometry, independent of the animated hit area and previews.
+pub static DOCK_OVERLAP_RECT: Mutex<Option<IntRect>> = Mutex::new(None);
 pub static NOTCH_RECT: Mutex<Option<IntRect>> = Mutex::new(None);
 pub static DOCK_IS_HOVERED: AtomicBool = AtomicBool::new(false);
 pub static NOTCH_IS_HOVERED: AtomicBool = AtomicBool::new(false);
@@ -43,7 +45,6 @@ pub static CURRENT_BRIGHTNESS: AtomicU32 = AtomicU32::new(50);
 pub static CURRENT_VOLUME: AtomicU32 = AtomicU32::new(50);
 pub static LAST_BRIGHTNESS_CHANGE: AtomicI64 = AtomicI64::new(0);
 pub static ANY_MEDIA_PLAYING: AtomicBool = AtomicBool::new(false);
-pub static LAST_START_TOGGLE_MS: AtomicI64 = AtomicI64::new(0);
 // Whether the Start menu was open when the left button last went down,
 // recorded by the mouse hook before Start can react to the press.
 pub static START_OPEN_AT_PRESS: AtomicBool = AtomicBool::new(false);
